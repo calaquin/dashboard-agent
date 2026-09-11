@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+agent.env
+server.log
+server.pid

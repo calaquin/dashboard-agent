@@ -1,0 +1,21 @@
+[Unit]
+Description=Dashboard Metrics Agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dashboard-agent
+Group=dashboard-agent
+SupplementaryGroups=docker
+EnvironmentFile=/etc/dashboard-agent
+ExecStart=/usr/local/lib/dashboard-agent/agent.py
+Restart=on-failure
+RestartSec=5
+
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
