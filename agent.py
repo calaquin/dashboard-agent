@@ -516,7 +516,8 @@ def snapraid_status():
         combined = (output + "\n" + error).strip()
         lower = combined.lower()
 
-        if code != 0:
+        has_status_output = any(kw in lower for kw in ("no error detected", "scrub status", "array status", "self test", "files with"))
+        if code != 0 and not has_status_output:
             summary = "Sudo required for snapraid status" if ("password" in lower or "sudo" in lower) else "SnapRAID status failed"
             data = {
                 "available": True,
