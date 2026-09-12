@@ -694,11 +694,18 @@ def execute_host_power_action(action):
         return (403, {"error": "Host power management is disabled on this agent"})
     if action == "reboot":
         cmd = ["/bin/systemctl", "reboot"] if shutil.which("systemctl") else ["/sbin/reboot"]
+        base_cmd = ["/bin/systemctl", "reboot"] if shutil.which("systemctl") else ["/sbin/reboot"]
     elif action == "shutdown":
         cmd = ["/bin/systemctl", "poweroff"] if shutil.which("systemctl") else ["/sbin/shutdown", "-h", "now"]
+        base_cmd = ["/bin/systemctl", "poweroff"] if shutil.which("systemctl") else ["/sbin/shutdown", "-h", "now"]
     else:
         return (400, {"error": "Invalid power action"})
     code, out, err = run_command(cmd, timeout=10)
+
+    code, out, err = run_command(base_cmd, timeout=10)
+    if code != 0:
+        sudo_cmd = ["sudo", "-n"] + base_cmd
+        code, out, err = run_command(sudo_cmd, timeout=10)
     if code != 0:
         return (500, {"error": err or "Failed to %s host" % action})
     return (200, {"ok": True, "action": action, "output": out})
