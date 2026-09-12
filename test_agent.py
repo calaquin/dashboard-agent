@@ -126,5 +126,49 @@ class StatusContractTests(unittest.TestCase):
         self.assertEqual(result["host"]["hostname"], "test-host")
 
 
+class DockerControlTests(unittest.TestCase):
+
+    @mock.patch("agent.run_command")
+    def test_executes_allowed_action(self, run_command):
+        run_command.return_value = (0, "plex", "")
+        status, response = agent.execute_container_action("plex", "restart")
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["action"], "restart")
+
+    def test_rejects_invalid_action(self):
+        status, response = agent.execute_container_action("plex", "exec")
+        self.assertEqual(status, 400)
+        self.assertIn("error", response)
+
+    def test_rejects_invalid_container_name(self):
+        status, response = agent.execute_container_action("plex; rm -rf /", "stop")
+        self.assertEqual(status, 403)
+
+    @mock.patch("agent.run_command")
+    def test_fetches_container_logs(self, run_command):
+        run_command.return_value = (0, "line 1\nline 2", "")
+        status, response = agent.get_container_logs("plex", lines=50)
+        self.assertEqual(status, 200)
+        self.assertEqual(response["logs"], "line 1\nline 2")
+
+
+class HostPowerControlTests(unittest.TestCase):
+
+    def test_power_action_rejected_when_not_enabled(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            status, response = agent.execute_host_power_action("reboot")
+            self.assertEqual(status, 403)
+            self.assertIn("disabled", response["error"])
+
+    @mock.patch("agent.run_command")
+    def test_power_action_executes_when_enabled(self, run_command):
+        run_command.return_value = (0, "rebooting", "")
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ALLOW_POWER": "1"}):
+            status, response = agent.execute_host_power_action("reboot")
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

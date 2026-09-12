@@ -5,6 +5,7 @@ import http.server
 import hmac
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -26,6 +27,8 @@ CAPABILITIES = [
     "metrics.storage",
     "metrics.docker",
     "metrics.snapraid",
+    "controls.docker.v1",
+    "controls.power.v1",
 ]
 
 STATUS_CACHE_SECONDS = 5
@@ -649,6 +652,58 @@ class JsonHandlerMixin:
         )
 
 
+ALLOWED_ACTIONS = {"start", "stop", "restart", "pause", "unpause"}
+
+
+def is_container_allowlisted(name):
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", name):
+        return False
+    allowlist_env = os.environ.get("DASHBOARD_AGENT_DOCKER_ALLOWLIST", "").strip()
+    if allowlist_env == "*":
+        return True
+    if allowlist_env:
+        allowed = {item.strip() for item in allowlist_env.split(",") if item.strip()}
+        return name in allowed
+    return True
+
+
+def execute_container_action(name, action):
+    if action not in ALLOWED_ACTIONS:
+        return (400, {"error": "Invalid action"})
+    if not is_container_allowlisted(name):
+        return (403, {"error": "Container is not allowlisted"})
+    code, out, err = run_command(["docker", action, name], timeout=15)
+    if code != 0:
+        return (500, {"error": err or "Failed to %s container %s" % (action, name)})
+    return (200, {"ok": True, "container": name, "action": action, "output": out})
+
+
+def get_container_logs(name, lines=100):
+    if not is_container_allowlisted(name):
+        return (403, {"error": "Container is not allowlisted"})
+    lines = min(max(int(lines), 1), 500)
+    code, out, err = run_command(["docker", "logs", "--tail", str(lines), name], timeout=10)
+    if code != 0:
+        return (500, {"error": err or "Failed to fetch logs for %s" % name})
+    return (200, {"ok": True, "container": name, "logs": out})
+
+
+def execute_host_power_action(action):
+    allow_power = os.environ.get("DASHBOARD_AGENT_ALLOW_POWER", "").lower() in ("1", "true", "yes")
+    if not allow_power:
+        return (403, {"error": "Host power management is disabled on this agent"})
+    if action == "reboot":
+        cmd = ["/bin/systemctl", "reboot"] if shutil.which("systemctl") else ["/sbin/reboot"]
+    elif action == "shutdown":
+        cmd = ["/bin/systemctl", "poweroff"] if shutil.which("systemctl") else ["/sbin/shutdown", "-h", "now"]
+    else:
+        return (400, {"error": "Invalid power action"})
+    code, out, err = run_command(cmd, timeout=10)
+    if code != 0:
+        return (500, {"error": err or "Failed to %s host" % action})
+    return (200, {"ok": True, "action": action, "output": out})
+
+
 class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
 
     agent_token = ""
@@ -660,7 +715,9 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
         return hmac.compare_digest(supplied, expected)
 
     def do_GET(self):
-        path = urllib.parse.urlsplit(self.path).path
+        url_parts = urllib.parse.urlsplit(self.path)
+        path = url_parts.path
+        query = urllib.parse.parse_qs(url_parts.query)
 
         if path == "/health":
             self.send_json(200, {
@@ -676,18 +733,56 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
             })
             return
 
-        if path != "/api/status":
-            self.send_json(404, {"error": "Not found"})
+        if not self.is_authorized():
+            self.send_json(401, {"error": "Unauthorized"})
             return
+
+        if path == "/api/status":
+            try:
+                self.send_json(200, cached_status())
+            except Exception as exc:
+                self.send_json(500, {"error": str(exc)})
+            return
+
+        logs_match = re.match(r"^/api/containers/([a-zA-Z0-9_.-]+)/logs$", path)
+        if logs_match:
+            container_name = logs_match.group(1)
+            try:
+                lines = int(query.get("lines", [100])[0])
+            except (ValueError, TypeError):
+                lines = 100
+            status_code, response = get_container_logs(container_name, lines)
+            self.send_json(status_code, response)
+            return
+
+        self.send_json(404, {"error": "Not found"})
+
+    def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
 
         if not self.is_authorized():
             self.send_json(401, {"error": "Unauthorized"})
             return
 
-        try:
-            self.send_json(200, cached_status())
-        except Exception as exc:
-            self.send_json(500, {"error": str(exc)})
+        action_match = re.match(
+            r"^/api/containers/([a-zA-Z0-9_.-]+)/(start|stop|restart|pause|unpause)$",
+            path
+        )
+        if action_match:
+            container_name = action_match.group(1)
+            action = action_match.group(2)
+            status_code, response = execute_container_action(container_name, action)
+            self.send_json(status_code, response)
+            return
+
+        power_match = re.match(r"^/api/power/(reboot|shutdown)$", path)
+        if power_match:
+            action = power_match.group(1)
+            status_code, response = execute_host_power_action(action)
+            self.send_json(status_code, response)
+            return
+
+        self.send_json(404, {"error": "Not found"})
 
 
 def main(argv=None):
