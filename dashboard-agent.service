@@ -15,7 +15,8 @@ RestartSec=5
 
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=strict
+ProtectSystem=full
+ReadWritePaths=/srv /mnt /media
 
 [Install]
 WantedBy=multi-user.target
