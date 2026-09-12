@@ -6,6 +6,11 @@ central [kindle-dashboard](https://github.com/calaquin/kindle-dashboard).
 
 The agent exposes JSON only, requires a bearer token, and stores no data.
 
+The status response follows the versioned contract documented in the central
+dashboard's `STATUS_SCHEMA.md`. Agent `0.2.0` advertises status schema version
+`1` and a capability list so newer dashboards can detect compatibility before
+using optional fields.
+
 ## Requirements
 
 - Debian with Python 3

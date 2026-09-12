@@ -60,5 +60,71 @@ class AuthorizationTests(unittest.TestCase):
         self.assertFalse(handler.is_authorized())
 
 
+class StatusContractTests(unittest.TestCase):
+
+    @mock.patch("agent.snapraid_status")
+    @mock.patch("agent.docker_status")
+    @mock.patch("agent.storage_status")
+    @mock.patch("agent.wan_available", return_value=True)
+    @mock.patch("agent.ping", return_value=True)
+    @mock.patch("agent.default_gateway", return_value="10.0.0.1")
+    @mock.patch("agent.load_average", return_value=0.5)
+    @mock.patch("agent.uptime_seconds", return_value=3600)
+    @mock.patch("agent.temperature", return_value=42.0)
+    @mock.patch("agent.memory_status")
+    @mock.patch("agent.cpu_percent", return_value=12.5)
+    @mock.patch("agent.lan_ip", return_value="10.0.0.10")
+    @mock.patch("agent.hostname", return_value="test-host")
+    def test_status_advertises_versioned_contract_and_capabilities(
+            self,
+            hostname,
+            lan_ip,
+            cpu_percent,
+            memory_status,
+            temperature,
+            uptime_seconds,
+            load_average,
+            default_gateway,
+            ping,
+            wan_available,
+            storage_status,
+            docker_status,
+            snapraid_status):
+
+        memory_status.return_value = {
+            "percent": 25.0,
+            "used_mb": 256,
+            "total_mb": 1024
+        }
+        storage_status.return_value = []
+        docker_status.return_value = {
+            "available": True,
+            "total": 0,
+            "running": 0,
+            "containers": [],
+            "services": []
+        }
+        snapraid_status.return_value = {
+            "available": False,
+            "state": "missing",
+            "summary": "SnapRAID not found"
+        }
+
+        result = agent.build_status()
+
+        self.assertEqual(
+            result["schema"],
+            {
+                "name": "dashboard-agent-status",
+                "version": 1
+            }
+        )
+        self.assertEqual(result["agent"]["name"], "dashboard-agent")
+        self.assertEqual(result["agent"]["version"], agent.AGENT_VERSION)
+        self.assertIn("status.v1", result["agent"]["capabilities"])
+        self.assertIn("metrics.docker", result["agent"]["capabilities"])
+        self.assertEqual(result["host"]["hostname"], "test-host")
+
+
 if __name__ == "__main__":
     unittest.main()

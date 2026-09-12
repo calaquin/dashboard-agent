@@ -14,6 +14,20 @@ import urllib.parse
 
 PORT = 8100
 
+AGENT_NAME = "dashboard-agent"
+AGENT_VERSION = "0.2.0"
+STATUS_SCHEMA_NAME = "dashboard-agent-status"
+STATUS_SCHEMA_VERSION = 1
+
+CAPABILITIES = [
+    "status.v1",
+    "metrics.host",
+    "metrics.network",
+    "metrics.storage",
+    "metrics.docker",
+    "metrics.snapraid",
+]
+
 STATUS_CACHE_SECONDS = 5
 SNAPRAID_CACHE_SECONDS = 60
 
@@ -541,6 +555,17 @@ def build_status():
     memory = memory_status()
 
     return {
+        "schema": {
+            "name": STATUS_SCHEMA_NAME,
+            "version": STATUS_SCHEMA_VERSION
+        },
+
+        "agent": {
+            "name": AGENT_NAME,
+            "version": AGENT_VERSION,
+            "capabilities": list(CAPABILITIES)
+        },
+
         "generated": int(time.time()),
 
         "host": {
@@ -638,7 +663,17 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
 
         if path == "/health":
-            self.send_json(200, {"ok": True})
+            self.send_json(200, {
+                "ok": True,
+                "agent": {
+                    "name": AGENT_NAME,
+                    "version": AGENT_VERSION
+                },
+                "schema": {
+                    "name": STATUS_SCHEMA_NAME,
+                    "version": STATUS_SCHEMA_VERSION
+                }
+            })
             return
 
         if path != "/api/status":
@@ -698,5 +733,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
     main()
