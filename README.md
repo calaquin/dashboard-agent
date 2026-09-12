@@ -131,4 +131,5 @@ sudo install -m 0755 \
   /tmp/dashboard-agent.py \
   /usr/local/lib/dashboard-agent/agent.py
 sudo systemctl restart dashboard-agent
+sudo systemctl restart dashboard-agent && curl -sf http://127.0.0.1:8100/health && echo "\n✓ dashboard-agent updated and verified healthy!"
 ```

@@ -504,7 +504,6 @@ def snapraid_status():
 
     else:
         code, output, error = run_command(
-            ["sudo", "-n", executable, "status"],
             [executable, "status"],
             timeout=8
         )
@@ -518,7 +517,6 @@ def snapraid_status():
         lower = combined.lower()
 
         if code != 0:
-            state = "warning"
             summary = "Sudo required for snapraid status" if ("password" in lower or "sudo" in lower) else "SnapRAID status failed"
             data = {
                 "available": True,
@@ -532,39 +530,28 @@ def snapraid_status():
             unsynced_files = 0
             oldest_scrub_days = None
 
-        elif "no error detected" in lower:
-            state = "ok"
             for line in combined.splitlines():
                 clean = line.strip()
                 l_clean = clean.lower()
 
-        elif "warning" in lower or "error" in lower:
-            state = "warning"
                 if "no error detected" in l_clean:
                     errors = 0
                 elif "error detected" in l_clean or "errors detected" in l_clean:
                     m = re.search(r'(\d+)\s+error', l_clean)
                     errors = int(m.group(1)) if m else 1
 
-        else:
-            state = "ok"
                 m_scrub = re.search(r'(\d+)%\s+of the array is scrubbed', l_clean)
                 if m_scrub:
                     scrub_percent = int(m_scrub.group(1))
 
-        summary = "Status available"
                 m_oldest = re.search(r'oldest block was scrubbed (\d+) days ago', l_clean)
                 if m_oldest:
                     oldest_scrub_days = int(m_oldest.group(1))
 
-        for line in combined.splitlines():
-            clean = line.strip()
                 m_mod = re.search(r'you have (\d+) files with', l_clean)
                 if m_mod:
                     unsynced_files += int(m_mod.group(1))
 
-            if not clean:
-                continue
             if errors > 0:
                 state = "error"
             elif unsynced_files > 500 or (oldest_scrub_days is not None and oldest_scrub_days > 14):
@@ -572,7 +559,6 @@ def snapraid_status():
             else:
                 state = "ok"
 
-            lower_line = clean.lower()
             summary_parts = []
             if scrub_percent is not None:
                 summary_parts.append("%s%% scrubbed" % scrub_percent)
@@ -581,20 +567,8 @@ def snapraid_status():
             if oldest_scrub_days is not None:
                 summary_parts.append("scrubbed %sd ago" % oldest_scrub_days)
 
-            if (
-                "no error detected" in lower_line
-                or "warning" in lower_line
-                or "error" in lower_line
-            ):
-                summary = clean
-                break
             summary = " · ".join(summary_parts) if summary_parts else ("No errors detected" if state == "ok" else "Check status")
 
-        data = {
-            "available": True,
-            "state": state,
-            "summary": summary
-        }
             data = {
                 "available": True,
                 "state": state,
