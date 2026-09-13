@@ -12,6 +12,7 @@ PORT="8100"
 INSTANCE=""
 BIND="0.0.0.0"
 ENABLE_DOCKER=0
+ENABLE_POWER=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
@@ -54,6 +55,7 @@ Options:
   --instance <NAME>              Agent instance name (default: port or 'default')
   --bind <ADDRESS>               Agent bind address (default: 0.0.0.0)
   --enable-docker                Grant dashboard-agent access to Docker daemon
+  --enable-power                 Grant dashboard-agent permission to reboot/shutdown host
   --remove-old                   Automatically remove other existing agent instances
   --reenroll                     Replace existing enrollment/credentials
   --force                        Force reinstallation
@@ -95,6 +97,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-docker)
             ENABLE_DOCKER=1
+            shift
+            ;;
+        --enable-power)
+            ENABLE_POWER=1
             shift
             ;;
         --remove-old)
@@ -364,12 +370,24 @@ EOF
     rm -f "$DATA_DIR/enrollment.json"
 fi
 
+# Handle host power management permissions
+if [[ $ENABLE_POWER -eq 1 ]]; then
+    echo "Configuring host power management permissions (reboot/shutdown enabled)..."
+    if [[ -d /etc/sudoers.d ]]; then
+        cat <<EOF > /etc/sudoers.d/dashboard-agent-power
+dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /bin/systemctl poweroff, /sbin/reboot, /sbin/shutdown
+EOF
+        chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
+    fi
+fi
+
 # Write instance configuration environment file
 ENV_TMP=$(mktemp)
 cat <<EOF > "$ENV_TMP"
 DASHBOARD_AGENT_PORT=${PORT}
 DASHBOARD_AGENT_BIND=${BIND}
 DASHBOARD_AGENT_DATA_DIR=${DATA_DIR}
+DASHBOARD_AGENT_ALLOW_POWER=${ENABLE_POWER}
 EOF
 install -m 0600 -o dashboard-agent -g dashboard-agent "$ENV_TMP" "$DATA_DIR/agent.env"
 rm -f "$ENV_TMP"

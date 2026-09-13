@@ -470,6 +470,53 @@ class MultiInstanceCliTests(unittest.TestCase):
         mock_server.assert_called_once_with(("127.0.0.1", 8100), agent.AgentHandler)
 
 
+class HardwareProfileTests(unittest.TestCase):
+
+    def test_collect_cpu_profile_structure(self):
+        cpu = agent.collect_cpu_profile()
+        self.assertIn("model", cpu)
+        self.assertIn("arch", cpu)
+        self.assertIn("cores_physical", cpu)
+        self.assertIn("threads_logical", cpu)
+        self.assertGreaterEqual(cpu["threads_logical"], 1)
+
+    def test_collect_platform_profile_structure(self):
+        plat = agent.collect_platform_profile()
+        self.assertIn("board_name", plat)
+        self.assertIn("virtualization", plat)
+        self.assertIn("uefi", plat)
+
+    def test_collect_os_profile_structure(self):
+        os_info = agent.collect_os_profile()
+        self.assertIn("distro", os_info)
+        self.assertIn("kernel", os_info)
+        self.assertTrue(len(os_info["kernel"]) > 0)
+
+    def test_collect_hardware_profile_combines_all(self):
+        profile = agent.collect_hardware_profile()
+        self.assertIn("cpu", profile)
+        self.assertIn("platform", profile)
+        self.assertIn("os", profile)
+        self.assertIn("memory", profile)
+        self.assertIn("network_interfaces", profile)
+        self.assertIn("gpu", profile)
+        self.assertIn("storage_devices", profile)
+
+    def test_profile_endpoint_authorized(self):
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "valid-token"
+        handler.headers = {"Authorization": "Bearer valid-token"}
+        handler.path = "/api/profile"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.do_GET()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertIn("cpu", sent[0][1])
+        self.assertIn("platform", sent[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()
 
