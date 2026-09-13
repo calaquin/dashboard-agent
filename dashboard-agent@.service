@@ -17,11 +17,14 @@ ExecStart=/usr/local/lib/dashboard-agent/agent.py --data-dir /var/lib/dashboard-
 Restart=always
 RestartSec=2
 
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
+ProtectSystem=strict
 ProtectSystem=full
 ReadWritePaths=/var/lib/dashboard-agent-%i /usr/local/lib/dashboard-agent
 AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target
