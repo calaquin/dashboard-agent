@@ -7,16 +7,16 @@ Wants=network-online.target
 Type=simple
 User=dashboard-agent
 Group=dashboard-agent
-SupplementaryGroups=docker
-EnvironmentFile=/etc/dashboard-agent
+EnvironmentFile=-/etc/dashboard-agent
 ExecStart=/usr/local/lib/dashboard-agent/agent.py
 Restart=on-failure
 RestartSec=5
 
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=full
-ReadWritePaths=/srv /mnt /media
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dashboard-agent
 
 [Install]
 WantedBy=multi-user.target

@@ -1,3 +1,5 @@
+import json
+import time
 import unittest
 from unittest import mock
 
@@ -170,5 +172,142 @@ class HostPowerControlTests(unittest.TestCase):
             self.assertTrue(response["ok"])
 
 
+class EnrollmentProtocolTests(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.data_dir = self.temp_dir.name
+        agent.AgentHandler.data_dir = self.data_dir
+        agent.AgentHandler.agent_token = ""
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+        agent.AgentHandler.agent_token = ""
+        agent.AgentHandler.data_dir = agent.DATA_DIR
+
+    def test_crockford_base32_and_verification_code(self):
+        code = agent.compute_verification_code(
+            bootstrap_token="boot-token-12345",
+            enrollment_id="enroll-uuid-111",
+            agent_id="agent-uuid-222"
+        )
+        self.assertEqual(len(code), 9)
+        self.assertEqual(code[4], "-")
+        raw_chars = code.replace("-", "")
+        self.assertEqual(len(raw_chars), 8)
+        for char in raw_chars:
+            self.assertIn(char, agent.CROCKFORD_ALPHABET)
+
+        # Deterministic check
+        code2 = agent.compute_verification_code(
+            bootstrap_token="boot-token-12345",
+            enrollment_id="enroll-uuid-111",
+            agent_id="agent-uuid-222"
+        )
+        self.assertEqual(code, code2)
+
+    def test_get_or_create_agent_id_persists(self):
+        agent_id1 = agent.get_or_create_agent_id(self.data_dir)
+        self.assertTrue(len(agent_id1) >= 32)
+        agent_id2 = agent.get_or_create_agent_id(self.data_dir)
+        self.assertEqual(agent_id1, agent_id2)
+
+    def test_enrollment_probe_and_expiration(self):
+        enrollment_file = agent.Path(self.data_dir) / "enrollment.json"
+        agent.atomic_write_json(enrollment_file, {
+            "enrollment_id": "test-enroll-id",
+            "bootstrap_token": "test-boot-token",
+            "expires_at": int(time.time()) + 1800
+        })
+
+        handler = object.__new__(agent.AgentHandler)
+        handler.data_dir = self.data_dir
+        handler.headers = {"Authorization": "Bearer test-boot-token"}
+
+        ok, code, payload = handler.check_enrollment_auth()
+        self.assertTrue(ok)
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["enrollment_id"], "test-enroll-id")
+
+        # Wrong token
+        handler.headers = {"Authorization": "Bearer wrong-token"}
+        ok, code, payload = handler.check_enrollment_auth()
+        self.assertFalse(ok)
+        self.assertEqual(code, 401)
+
+        # Expired enrollment
+        agent.atomic_write_json(enrollment_file, {
+            "enrollment_id": "test-enroll-id",
+            "bootstrap_token": "test-boot-token",
+            "expires_at": int(time.time()) - 10
+        })
+        handler.headers = {"Authorization": "Bearer test-boot-token"}
+        ok, code, payload = handler.check_enrollment_auth()
+        self.assertFalse(ok)
+        self.assertEqual(code, 410)
+        self.assertFalse(enrollment_file.exists())
+
+    def test_commit_rotates_credentials_and_is_idempotent(self):
+        import io
+        enrollment_file = agent.Path(self.data_dir) / "enrollment.json"
+        agent.atomic_write_json(enrollment_file, {
+            "enrollment_id": "test-enroll-id",
+            "bootstrap_token": "test-boot-token",
+            "expires_at": int(time.time()) + 1800
+        })
+
+        # Commit permanent token
+        handler = object.__new__(agent.AgentHandler)
+        handler.data_dir = self.data_dir
+        body_bytes = b'{"permanent_token":"permanent-secret-1"}'
+        handler.headers = {
+            "Authorization": "Bearer test-boot-token",
+            "Content-Length": str(len(body_bytes))
+        }
+        handler.rfile = io.BytesIO(body_bytes)
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.path = "/api/enroll/commit"
+        handler.do_POST()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertEqual(sent[0][1]["status"], "committed")
+
+        # Enrollment file should be removed
+        self.assertFalse(enrollment_file.exists())
+
+        # Credentials file should exist with permanent token
+        creds_file = agent.Path(self.data_dir) / "credentials.json"
+        self.assertTrue(creds_file.exists())
+        creds_data = json.loads(creds_file.read_text(encoding="utf-8"))
+        self.assertEqual(creds_data["token"], "permanent-secret-1")
+
+        # Re-commit is idempotent
+        sent.clear()
+        handler.headers = {
+            "Authorization": "Bearer permanent-secret-1",
+            "Content-Length": str(len(body_bytes))
+        }
+        handler.rfile = io.BytesIO(body_bytes)
+        handler.do_POST()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertTrue(sent[0][1].get("idempotent"))
+
+        # Permanent token authorizes requests
+        handler.headers = {"Authorization": "Bearer permanent-secret-1"}
+        self.assertTrue(handler.is_authorized())
+
+        # Old bootstrap token rejected
+        handler.headers = {"Authorization": "Bearer test-boot-token"}
+        self.assertFalse(handler.is_authorized())
+
+
 if __name__ == "__main__":
+    import time
+    import json
     unittest.main()
+

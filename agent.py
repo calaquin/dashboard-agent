@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-import http.server
+import hashlib
 import hmac
+import http.server
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import socket
@@ -12,13 +14,102 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import uuid
 
 PORT = 8100
 
 AGENT_NAME = "dashboard-agent"
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
+
+DATA_DIR = Path(os.environ.get("DASHBOARD_AGENT_DATA_DIR", "/var/lib/dashboard-agent"))
+CONFIG_DIR = Path(os.environ.get("DASHBOARD_AGENT_CONFIG_DIR", "/etc/dashboard-agent"))
+CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def crockford_base32_encode(raw_bytes):
+    if len(raw_bytes) != 5:
+        raise ValueError("Expected 5 bytes for 40-bit Crockford Base32 encoding")
+    val = int.from_bytes(raw_bytes, "big")
+    chars = []
+    for _ in range(8):
+        chars.append(CROCKFORD_ALPHABET[val & 0x1F])
+        val >>= 5
+    chars.reverse()
+    code = "".join(chars)
+    return code[:4] + "-" + code[4:]
+
+
+def compute_verification_code(bootstrap_token, enrollment_id, agent_id):
+    prefix = b"kindle-dashboard-enrollment-v1"
+    message = (
+        prefix
+        + b"\x00"
+        + enrollment_id.encode("utf-8")
+        + b"\x00"
+        + agent_id.encode("utf-8")
+    )
+    digest = hmac.new(
+        bootstrap_token.encode("utf-8"),
+        message,
+        hashlib.sha256
+    ).digest()
+    return crockford_base32_encode(digest[:5])
+
+
+def get_or_create_agent_id(data_dir=None):
+    if data_dir is None:
+        data_dir = DATA_DIR
+    agent_id_file = Path(data_dir) / "agent-id"
+    if agent_id_file.exists():
+        try:
+            content = agent_id_file.read_text(encoding="utf-8").strip()
+            if content and re.match(r"^[0-9a-fA-F-]{36}$", content):
+                return content.lower()
+        except Exception:
+            pass
+    new_id = str(uuid.uuid4())
+    try:
+        data_dir_path = Path(data_dir)
+        data_dir_path.mkdir(parents=True, exist_ok=True)
+        tmp_file = data_dir_path / (".agent-id.tmp.%d" % os.getpid())
+        tmp_file.write_text(new_id + "\n", encoding="utf-8")
+        try:
+            os.chmod(tmp_file, 0o644)
+        except OSError:
+            pass
+        os.replace(tmp_file, agent_id_file)
+    except Exception:
+        pass
+    return new_id
+
+
+def atomic_write_json(file_path, data, mode=0o600):
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / (".%s.tmp.%d" % (path.name, os.getpid()))
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    try:
+        os.chmod(tmp_path, mode)
+    except OSError:
+        pass
+    os.replace(tmp_path, path)
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
 
 CAPABILITIES = [
     "status.v1",
@@ -599,6 +690,7 @@ def build_status():
         "agent": {
             "name": AGENT_NAME,
             "version": AGENT_VERSION,
+            "agent_id": get_or_create_agent_id(DATA_DIR),
             "capabilities": list(CAPABILITIES)
         },
 
@@ -744,12 +836,87 @@ def execute_host_power_action(action):
 class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
 
     agent_token = ""
+    data_dir = DATA_DIR
+
+    def read_json(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if not length or length > 65536:
+            return None
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    @classmethod
+    def get_active_token(cls):
+        if cls.agent_token:
+            return cls.agent_token
+        creds_file = Path(cls.data_dir) / "credentials.json"
+        if creds_file.exists():
+            try:
+                data = json.loads(creds_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("token"):
+                    cls.agent_token = str(data["token"])
+                    return cls.agent_token
+            except Exception:
+                pass
+        legacy_file = Path(os.environ.get("DASHBOARD_AGENT_CONFIG", "/etc/dashboard-agent"))
+        if legacy_file.exists() and legacy_file.is_file():
+            try:
+                for line in legacy_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("DASHBOARD_AGENT_TOKEN="):
+                        cls.agent_token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        return cls.agent_token
+            except Exception:
+                pass
+        return ""
+
+    @classmethod
+    def get_enrollment(cls):
+        enrollment_file = Path(cls.data_dir) / "enrollment.json"
+        if not enrollment_file.exists():
+            return None
+        try:
+            data = json.loads(enrollment_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            expires_at = data.get("expires_at")
+            if expires_at is not None and time.time() > float(expires_at):
+                try:
+                    enrollment_file.unlink()
+                except OSError:
+                    pass
+                return {"expired": True, "enrollment_id": data.get("enrollment_id")}
+            return data
+        except Exception:
+            return None
 
     def is_authorized(self):
         supplied = self.headers.get("Authorization", "")
-        expected = "Bearer " + self.agent_token
-
+        token = getattr(self, "agent_token", "") or self.get_active_token()
+        if not token:
+            return False
+        expected = "Bearer " + token
         return hmac.compare_digest(supplied, expected)
+
+    def check_enrollment_auth(self):
+        enrollment = self.get_enrollment()
+        if not enrollment:
+            return False, 404, {"error": "Enrollment not active"}
+        if enrollment.get("expired"):
+            return False, 410, {"error": "Enrollment expired"}
+
+        bootstrap_token = enrollment.get("bootstrap_token", "")
+        if not bootstrap_token:
+            return False, 401, {"error": "Invalid enrollment state"}
+
+        supplied = self.headers.get("Authorization", "")
+        expected = "Bearer " + bootstrap_token
+        if not hmac.compare_digest(supplied, expected):
+            return False, 401, {"error": "Unauthorized bootstrap credential"}
+
+        return True, 200, enrollment
 
     def do_GET(self):
         url_parts = urllib.parse.urlsplit(self.path)
@@ -761,12 +928,30 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 "ok": True,
                 "agent": {
                     "name": AGENT_NAME,
-                    "version": AGENT_VERSION
+                    "version": AGENT_VERSION,
+                    "agent_id": get_or_create_agent_id(self.data_dir)
                 },
                 "schema": {
                     "name": STATUS_SCHEMA_NAME,
                     "version": STATUS_SCHEMA_VERSION
                 }
+            })
+            return
+
+        if path == "/api/enroll/probe":
+            ok, code, payload = self.check_enrollment_auth()
+            if not ok:
+                self.send_json(code, payload)
+                return
+            agent_id = get_or_create_agent_id(self.data_dir)
+            self.send_json(200, {
+                "agent_id": agent_id,
+                "hostname": hostname(),
+                "agent_name": AGENT_NAME,
+                "agent_version": AGENT_VERSION,
+                "schema_version": STATUS_SCHEMA_VERSION,
+                "capabilities": list(CAPABILITIES),
+                "enrollment_id": payload.get("enrollment_id")
             })
             return
 
@@ -796,6 +981,58 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+
+        if path == "/api/enroll/commit":
+            body_json = self.read_json()
+            if not isinstance(body_json, dict) or not body_json.get("permanent_token"):
+                self.send_json(400, {"error": "Missing permanent_token"})
+                return
+
+            permanent_token = str(body_json["permanent_token"]).strip()
+            if not permanent_token:
+                self.send_json(400, {"error": "Invalid permanent_token"})
+                return
+
+            active = self.get_active_token()
+            if active and hmac.compare_digest(active, permanent_token):
+                agent_id = get_or_create_agent_id(self.data_dir)
+                self.send_json(200, {
+                    "ok": True,
+                    "agent_id": agent_id,
+                    "status": "committed",
+                    "idempotent": True
+                })
+                return
+
+            ok, code, payload = self.check_enrollment_auth()
+            if not ok:
+                self.send_json(code, payload)
+                return
+
+            agent_id = get_or_create_agent_id(self.data_dir)
+            creds_data = {
+                "token": permanent_token,
+                "agent_id": agent_id,
+                "created_at": int(time.time())
+            }
+            creds_file = Path(self.data_dir) / "credentials.json"
+            atomic_write_json(creds_file, creds_data, mode=0o600)
+
+            AgentHandler.agent_token = permanent_token
+
+            enrollment_file = Path(self.data_dir) / "enrollment.json"
+            if enrollment_file.exists():
+                try:
+                    enrollment_file.unlink()
+                except OSError:
+                    pass
+
+            self.send_json(200, {
+                "ok": True,
+                "agent_id": agent_id,
+                "status": "committed"
+            })
+            return
 
         if not self.is_authorized():
             self.send_json(401, {"error": "Unauthorized"})
@@ -832,17 +1069,26 @@ def main(argv=None):
         )
     )
     parser.add_argument("--port", type=int)
+    parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--token", default=None)
     args = parser.parse_args(argv)
 
-    token = os.environ.get(
+    if args.data_dir:
+        AgentHandler.data_dir = Path(args.data_dir)
+
+    token = args.token or os.environ.get(
         "DASHBOARD_AGENT_TOKEN",
         ""
     )
 
-    if not token:
-        parser.error("DASHBOARD_AGENT_TOKEN is required")
+    if token:
+        AgentHandler.agent_token = token
+    else:
+        active_token = AgentHandler.get_active_token()
+        enrollment = AgentHandler.get_enrollment()
+        if not active_token and not enrollment:
+            parser.error("DASHBOARD_AGENT_TOKEN or /var/lib/dashboard-agent/credentials.json/enrollment.json is required")
 
-    AgentHandler.agent_token = token
     port = args.port or PORT
 
     server = http.server.ThreadingHTTPServer(
