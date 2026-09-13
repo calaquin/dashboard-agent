@@ -9,6 +9,7 @@ BOOTSTRAP_TOKEN=""
 EXPIRES_AT=""
 TOKEN=""
 PORT="8100"
+INSTANCE=""
 BIND="0.0.0.0"
 ENABLE_DOCKER=0
 REENROLL=0
@@ -26,6 +27,7 @@ Options:
   --enrollment-expires-at <TIME> Unix timestamp when bootstrap credential expires
   --token <PERMANENT_TOKEN>      Direct permanent token (legacy / non-enrollment mode)
   --port <PORT>                  Agent HTTP port (default: 8100)
+  --instance <NAME>              Agent instance name (default: port or 'default')
   --bind <ADDRESS>               Agent bind address (default: 0.0.0.0)
   --enable-docker                Grant dashboard-agent access to Docker daemon
   --reenroll                     Replace existing enrollment/credentials
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --port)
             PORT="$2"
+            shift 2
+            ;;
+        --instance)
+            INSTANCE="$2"
             shift 2
             ;;
         --bind)
@@ -104,13 +110,29 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-DATA_DIR="/var/lib/dashboard-agent"
+if [[ -z "$INSTANCE" ]]; then
+    if [[ "$PORT" != "8100" ]]; then
+        INSTANCE="$PORT"
+    else
+        INSTANCE="default"
+    fi
+fi
+
+if [[ "$INSTANCE" == "default" ]]; then
+    DATA_DIR="/var/lib/dashboard-agent"
+    SERVICE_NAME="dashboard-agent"
+else
+    DATA_DIR="/var/lib/dashboard-agent-${INSTANCE}"
+    SERVICE_NAME="dashboard-agent@${INSTANCE}"
+fi
+
 LIB_DIR="/usr/local/lib/dashboard-agent"
 SERVICE_FILE="/etc/systemd/system/dashboard-agent.service"
+SERVICE_FILE_TEMPLATE="/etc/systemd/system/dashboard-agent@.service"
 
 # Check for existing installation or legacy configuration
 EXISTING_CONFIG=""
-if [[ -e /etc/dashboard-agent || -L /etc/dashboard-agent ]]; then
+if [[ "$INSTANCE" == "default" && (-e /etc/dashboard-agent || -L /etc/dashboard-agent) ]]; then
     EXISTING_CONFIG="/etc/dashboard-agent"
 elif [[ -f "$DATA_DIR/credentials.json" ]]; then
     EXISTING_CONFIG="$DATA_DIR/credentials.json"
@@ -146,7 +168,7 @@ if [[ -n "$EXISTING_CONFIG" && $FORCE -eq 0 && $REENROLL -eq 0 ]]; then
 fi
 
 # Clean up / backup existing legacy /etc/dashboard-agent
-if [[ -e /etc/dashboard-agent || -L /etc/dashboard-agent ]]; then
+if [[ "$INSTANCE" == "default" && (-e /etc/dashboard-agent || -L /etc/dashboard-agent) ]]; then
     BACKUP_PATH="/etc/dashboard-agent.bak.$(date +%s)"
     echo "Backing up existing /etc/dashboard-agent to $BACKUP_PATH..."
     mv -f /etc/dashboard-agent "$BACKUP_PATH" 2>/dev/null || rm -rf /etc/dashboard-agent
@@ -206,6 +228,16 @@ else
     rm -f /tmp/dashboard-agent.service
 fi
 
+if [[ -f "$SCRIPT_DIR/dashboard-agent@.service" ]]; then
+    echo "Using local dashboard-agent@.service..."
+    install -m 0644 "$SCRIPT_DIR/dashboard-agent@.service" "$SERVICE_FILE_TEMPLATE"
+else
+    echo "Downloading dashboard-agent@.service from ${REPO_RAW_URL}/dashboard-agent@.service..."
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent@.service?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent@.service
+    install -m 0644 /tmp/dashboard-agent@.service "$SERVICE_FILE_TEMPLATE"
+    rm -f /tmp/dashboard-agent@.service
+fi
+
 # Persistent agent_id
 AGENT_ID=$(python3 -c "
 import sys
@@ -245,10 +277,10 @@ fi
 
 # Start or restart systemd service
 if command -v systemctl >/dev/null 2>&1; then
-    echo "Starting dashboard-agent service..."
+    echo "Starting ${SERVICE_NAME} service..."
     systemctl daemon-reload
-    systemctl enable dashboard-agent >/dev/null 2>&1 || true
-    systemctl restart dashboard-agent
+    systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl restart "${SERVICE_NAME}"
     sleep 1
 fi
 
@@ -257,7 +289,7 @@ if command -v curl >/dev/null 2>&1; then
     if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
         echo "Agent health check passed on port ${PORT}."
     else
-        echo "Warning: Agent did not respond on http://127.0.0.1:${PORT}/health. Check journalctl -u dashboard-agent."
+        echo "Warning: Agent did not respond on http://127.0.0.1:${PORT}/health. Check journalctl -u ${SERVICE_NAME}."
     fi
 fi
 
@@ -276,6 +308,8 @@ print(agent.compute_verification_code('$BOOTSTRAP_TOKEN', '$ENROLLMENT_ID', '$AG
   
   Host:              $(hostname)
   Agent ID:          $AGENT_ID
+  Instance:          $INSTANCE
+  Port:              $PORT
   Verification Code: $VERIFY_CODE
   
   Enter this Verification Code in Kindle Dashboard Settings
@@ -304,9 +338,9 @@ EOF
         fi
 
         if command -v systemctl >/dev/null 2>&1; then
-            if ! systemctl is-active --quiet dashboard-agent; then
+            if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
                 echo ""
-                echo "✗ Error: dashboard-agent service stopped unexpectedly. Check 'journalctl -u dashboard-agent'." >&2
+                echo "✗ Error: ${SERVICE_NAME} service stopped unexpectedly. Check 'journalctl -u ${SERVICE_NAME}'." >&2
                 exit 1
             fi
         fi

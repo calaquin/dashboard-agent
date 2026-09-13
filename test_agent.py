@@ -405,10 +405,49 @@ class AgentSelfUpdateTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], 400)
         self.assertIn("verification failed", sent[0][1]["error"])
-        # Original file must remain untouched
         self.assertIn('AGENT_VERSION = "0.3.0"', self.agent_file.read_text(encoding="utf-8"))
+
+
+class MultiInstanceCliTests(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.data_dir_1 = Path(self.temp_dir.name) / "agent-1"
+        self.data_dir_2 = Path(self.temp_dir.name) / "agent-2"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+        agent.AgentHandler.data_dir = agent.DATA_DIR
+        agent.AgentHandler.agent_token = ""
+
+    def test_isolated_agent_ids_per_instance_directory(self):
+        id_1 = agent.get_or_create_agent_id(self.data_dir_1)
+        id_2 = agent.get_or_create_agent_id(self.data_dir_2)
+
+        self.assertNotEqual(id_1, id_2)
+        self.assertEqual(id_1, (self.data_dir_1 / "agent-id").read_text(encoding="utf-8").strip())
+        self.assertEqual(id_2, (self.data_dir_2 / "agent-id").read_text(encoding="utf-8").strip())
+
+    @mock.patch("http.server.ThreadingHTTPServer")
+    def test_cli_args_override_port_and_data_dir(self, mock_server):
+        mock_instance = mock.MagicMock()
+        mock_server.return_value = mock_instance
+
+        custom_dir = str(self.data_dir_1)
+        agent.main([
+            "--bind", "127.0.0.1",
+            "--port", "8105",
+            "--data-dir", custom_dir,
+            "--token", "test-token"
+        ])
+
+        self.assertEqual(agent.AgentHandler.data_dir, Path(custom_dir))
+        self.assertEqual(agent.AgentHandler.agent_token, "test-token")
+        mock_server.assert_called_once_with(("127.0.0.1", 8105), agent.AgentHandler)
+        mock_instance.serve_forever.assert_called_once()
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

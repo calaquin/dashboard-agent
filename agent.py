@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-PORT = 8100
+PORT = int(os.environ.get("DASHBOARD_AGENT_PORT", "8100"))
 
 AGENT_NAME = "dashboard-agent"
 AGENT_VERSION = "0.3.3"
@@ -733,7 +733,7 @@ def build_status():
         "agent": {
             "name": AGENT_NAME,
             "version": AGENT_VERSION,
-            "agent_id": get_or_create_agent_id(DATA_DIR),
+            "agent_id": get_or_create_agent_id(AgentHandler.data_dir),
             "capabilities": list(CAPABILITIES)
         },
 
@@ -1191,8 +1191,9 @@ def main(argv=None):
     parser.add_argument("--token", default=None)
     args = parser.parse_args(argv)
 
-    if args.data_dir:
-        AgentHandler.data_dir = Path(args.data_dir)
+    data_dir = args.data_dir or os.environ.get("DASHBOARD_AGENT_DATA_DIR")
+    if data_dir:
+        AgentHandler.data_dir = Path(data_dir)
 
     token = args.token or os.environ.get(
         "DASHBOARD_AGENT_TOKEN",
@@ -1205,7 +1206,7 @@ def main(argv=None):
         active_token = AgentHandler.get_active_token()
         enrollment = AgentHandler.get_enrollment()
         if not active_token and not enrollment:
-            parser.error("DASHBOARD_AGENT_TOKEN or /var/lib/dashboard-agent/credentials.json/enrollment.json is required")
+            parser.error("DASHBOARD_AGENT_TOKEN or %s/credentials.json/enrollment.json is required" % AgentHandler.data_dir)
 
     port = args.port or PORT
 

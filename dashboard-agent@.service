@@ -1,0 +1,27 @@
+[Unit]
+Description=Dashboard Metrics Agent (Instance %i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dashboard-agent
+Group=dashboard-agent
+Environment=DASHBOARD_AGENT_PORT=%i
+Environment=DASHBOARD_AGENT_DATA_DIR=/var/lib/dashboard-agent-%i
+EnvironmentFile=-/etc/dashboard-agent-%i
+ExecStart=/usr/local/lib/dashboard-agent/agent.py --port %i --data-dir /var/lib/dashboard-agent-%i
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dashboard-agent-%i /usr/local/lib/dashboard-agent
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
+
