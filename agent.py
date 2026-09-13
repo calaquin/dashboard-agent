@@ -20,6 +20,17 @@ import urllib.request
 import uuid
 
 PORT = int(os.environ.get("DASHBOARD_AGENT_PORT", "8100"))
+def parse_port(value, default=8100):
+    try:
+        val = int(value)
+        if 1 <= val <= 65535:
+            return val
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+PORT = parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), 8100)
 
 AGENT_NAME = "dashboard-agent"
 AGENT_VERSION = "0.3.3"
@@ -1209,6 +1220,7 @@ def main(argv=None):
             parser.error("DASHBOARD_AGENT_TOKEN or %s/credentials.json/enrollment.json is required" % AgentHandler.data_dir)
 
     port = args.port or PORT
+    port = args.port if args.port is not None else parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), PORT)
 
     server = http.server.ThreadingHTTPServer(
         (args.bind, port),

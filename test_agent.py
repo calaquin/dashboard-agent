@@ -428,6 +428,14 @@ class MultiInstanceCliTests(unittest.TestCase):
         self.assertEqual(id_1, (self.data_dir_1 / "agent-id").read_text(encoding="utf-8").strip())
         self.assertEqual(id_2, (self.data_dir_2 / "agent-id").read_text(encoding="utf-8").strip())
 
+    def test_parse_port_safe_fallbacks(self):
+        self.assertEqual(agent.parse_port("8105"), 8105)
+        self.assertEqual(agent.parse_port("invalid_string", default=8100), 8100)
+        self.assertEqual(agent.parse_port("development", default=8100), 8100)
+        self.assertEqual(agent.parse_port(None, default=8100), 8100)
+        self.assertEqual(agent.parse_port("-5", default=8100), 8100)
+        self.assertEqual(agent.parse_port("70000", default=8100), 8100)
+
     @mock.patch("http.server.ThreadingHTTPServer")
     def test_cli_args_override_port_and_data_dir(self, mock_server):
         mock_instance = mock.MagicMock()
@@ -445,6 +453,21 @@ class MultiInstanceCliTests(unittest.TestCase):
         self.assertEqual(agent.AgentHandler.agent_token, "test-token")
         mock_server.assert_called_once_with(("127.0.0.1", 8105), agent.AgentHandler)
         mock_instance.serve_forever.assert_called_once()
+
+    @mock.patch("http.server.ThreadingHTTPServer")
+    def test_main_handles_non_integer_env_port_gracefully(self, mock_server):
+        mock_instance = mock.MagicMock()
+        mock_server.return_value = mock_instance
+
+        custom_dir = str(self.data_dir_1)
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_PORT": "development"}):
+            agent.main([
+                "--bind", "127.0.0.1",
+                "--data-dir", custom_dir,
+                "--token", "test-token"
+            ])
+
+        mock_server.assert_called_once_with(("127.0.0.1", 8100), agent.AgentHandler)
 
 
 if __name__ == "__main__":

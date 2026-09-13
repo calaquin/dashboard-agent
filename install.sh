@@ -364,6 +364,16 @@ EOF
     rm -f "$DATA_DIR/enrollment.json"
 fi
 
+# Write instance configuration environment file
+ENV_TMP=$(mktemp)
+cat <<EOF > "$ENV_TMP"
+DASHBOARD_AGENT_PORT=${PORT}
+DASHBOARD_AGENT_BIND=${BIND}
+DASHBOARD_AGENT_DATA_DIR=${DATA_DIR}
+EOF
+install -m 0600 -o dashboard-agent -g dashboard-agent "$ENV_TMP" "$DATA_DIR/agent.env"
+rm -f "$ENV_TMP"
+
 # Start or restart systemd service
 if command -v systemctl >/dev/null 2>&1; then
     echo "Starting ${SERVICE_NAME} service..."
