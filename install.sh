@@ -18,7 +18,7 @@ UNINSTALL=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
-TAG="${DASHBOARD_AGENT_TAG:-v0.3.8}"
+TAG="${DASHBOARD_AGENT_TAG:-v0.3.9}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 prompt_yn() {
@@ -429,6 +429,9 @@ EOF
         cat <<EOF > /etc/sudoers.d/dashboard-agent-power
 dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*
 EOF
+    fi
+    chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
+
     if [[ $ENABLE_SNAPRAID -eq 1 ]]; then
         echo "Configuring SnapRAID sudoers permissions..."
         cat <<EOF > /etc/sudoers.d/dashboard-agent-snapraid
@@ -436,7 +439,6 @@ dashboard-agent ALL=(ALL) NOPASSWD: /usr/bin/snapraid status, /usr/local/bin/sna
 EOF
         chmod 0440 /etc/sudoers.d/dashboard-agent-snapraid 2>/dev/null || true
     fi
-    chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
 fi
 
 # Write instance configuration environment file
