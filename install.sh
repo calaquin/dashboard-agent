@@ -146,7 +146,11 @@ fi
 # Setup directory permissions
 install -d -m 0755 "$LIB_DIR"
 install -d -m 0700 -o dashboard-agent -g dashboard-agent "$DATA_DIR"
-install -d -m 0755 /etc/dashboard-agent
+
+# Backup legacy config file if present during enrollment
+if [[ -f /etc/dashboard-agent && -n "$ENROLLMENT_ID" ]]; then
+    mv -f /etc/dashboard-agent /etc/dashboard-agent.legacy.bak 2>/dev/null || true
+fi
 
 # Locate or download agent.py and dashboard-agent.service
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

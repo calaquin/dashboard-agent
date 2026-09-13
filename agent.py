@@ -62,13 +62,13 @@ def get_or_create_agent_id(data_dir=None):
     if data_dir is None:
         data_dir = DATA_DIR
     agent_id_file = Path(data_dir) / "agent-id"
-    if agent_id_file.exists():
-        try:
+    try:
+        if agent_id_file.exists():
             content = agent_id_file.read_text(encoding="utf-8").strip()
             if content and re.match(r"^[0-9a-fA-F-]{36}$", content):
                 return content.lower()
-        except Exception:
-            pass
+    except Exception:
+        pass
     new_id = str(uuid.uuid4())
     try:
         data_dir_path = Path(data_dir)
