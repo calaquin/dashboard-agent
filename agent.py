@@ -19,7 +19,6 @@ import urllib.parse
 import urllib.request
 import uuid
 
-PORT = int(os.environ.get("DASHBOARD_AGENT_PORT", "8100"))
 def parse_port(value, default=8100):
     try:
         val = int(value)
@@ -1219,7 +1218,6 @@ def main(argv=None):
         if not active_token and not enrollment:
             parser.error("DASHBOARD_AGENT_TOKEN or %s/credentials.json/enrollment.json is required" % AgentHandler.data_dir)
 
-    port = args.port or PORT
     port = args.port if args.port is not None else parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), PORT)
 
     server = http.server.ThreadingHTTPServer(
