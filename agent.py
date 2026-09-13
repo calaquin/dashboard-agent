@@ -1101,6 +1101,12 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
 
         if path == "/api/update":
             tag = os.environ.get("DASHBOARD_AGENT_TAG", "main")
+            try:
+                body_json = self.read_json()
+                if isinstance(body_json, dict) and body_json.get("tag"):
+                    tag = str(body_json["tag"]).strip()
+            except Exception:
+                pass
             repo_url = os.environ.get(
                 "DASHBOARD_AGENT_REPO_URL",
                 "https://raw.githubusercontent.com/calaquin/dashboard-agent/%s" % tag
