@@ -32,7 +32,7 @@ def parse_port(value, default=8100):
 PORT = parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), 8100)
 
 AGENT_NAME = "dashboard-agent"
-AGENT_VERSION = "0.3.12"
+AGENT_VERSION = "0.3.13"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
 
@@ -870,8 +870,6 @@ def collect_cpu_profile():
                         k, v = line.split(":", 1)
                         k = k.strip().lower()
                         v = v.strip()
-                        if k in ("model name", "hardware", "cpu architecture", "processor"):
-                            if cpu_info["model"] == "Unknown CPU" and v:
                         if k in ("model name", "hardware", "cpu architecture", "chip model"):
                             if (cpu_info["model"] == "Unknown CPU" or k == "model name") and v and not v.isdigit():
                                 cpu_info["model"] = v
