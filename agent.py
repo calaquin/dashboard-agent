@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import threading
 import time
@@ -525,17 +526,28 @@ def default_gateway():
         "default"
     ])
 
-    if code != 0:
-        return None
+    if code == 0 and output:
+        parts = output.split()
+        try:
+            index = parts.index("via")
+            return parts[index + 1]
+        except Exception:
+            pass
 
-    parts = output.split()
-
+    # Fallback: parse /proc/net/route
     try:
-        index = parts.index("via")
-        return parts[index + 1]
-
+        with open("/proc/net/route", "r", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.strip().split()
+                if len(parts) >= 3 and parts[1] == "00000000":
+                    gw_hex = parts[2]
+                    if gw_hex != "00000000":
+                        gw_int = int(gw_hex, 16)
+                        return socket.inet_ntoa(struct.pack("<L", gw_int))
     except Exception:
-        return None
+        pass
+
+    return None
 
 
 def ping(host):
@@ -547,7 +559,35 @@ def ping(host):
         timeout=2
     )
 
-    return code == 0
+    if code == 0:
+        return True
+
+    # Fallback 1: TCP probe to common router ports (DNS 53, HTTP 80, HTTPS 443)
+    # 0 = open, 111 (ECONNREFUSED) = router is online and active
+    for port in (53, 80, 443):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            res = sock.connect_ex((host, port))
+            sock.close()
+            if res in (0, 111):
+                return True
+        except Exception:
+            pass
+
+    # Fallback 2: Check ARP cache (/proc/net/arp)
+    try:
+        with open("/proc/net/arp", "r", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == host:
+                    flags = int(parts[2], 16) if parts[2].startswith("0x") else int(parts[2])
+                    if flags > 0 and parts[3] != "00:00:00:00:00:00":
+                        return True
+    except Exception:
+        pass
+
+    return False
 
 
 def wan_available():
