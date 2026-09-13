@@ -23,6 +23,7 @@ PORT = 8100
 
 AGENT_NAME = "dashboard-agent"
 AGENT_VERSION = "0.3.1"
+AGENT_VERSION = "0.3.2"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
 

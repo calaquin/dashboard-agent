@@ -337,7 +337,7 @@ class AgentSelfUpdateTests(unittest.TestCase):
         new_code = (
             b'#!/usr/bin/env python3\n'
             b'# Kindle Dashboard Agent Self-Update Test File\n'
-            b'AGENT_VERSION = "0.3.2"\n'
+            b'AGENT_VERSION = "0.3.3"\n'
             b'def main():\n'
             b'    print("updated")\n'
             b'if __name__ == "__main__":\n'
@@ -368,8 +368,8 @@ class AgentSelfUpdateTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], 200)
         self.assertEqual(sent[0][1]["status"], "updated")
-        self.assertEqual(sent[0][1]["from_version"], "0.3.1")
-        self.assertEqual(sent[0][1]["to_version"], "0.3.2")
+        self.assertEqual(sent[0][1]["from_version"], "0.3.2")
+        self.assertEqual(sent[0][1]["to_version"], "0.3.3")
         self.assertEqual(self.agent_file.read_bytes(), new_code)
 
     @mock.patch("urllib.request.urlopen")
