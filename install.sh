@@ -108,14 +108,48 @@ DATA_DIR="/var/lib/dashboard-agent"
 LIB_DIR="/usr/local/lib/dashboard-agent"
 SERVICE_FILE="/etc/systemd/system/dashboard-agent.service"
 
-# Check if already installed and healthy
-if [[ -f "$LIB_DIR/agent.py" && -f "$DATA_DIR/credentials.json" && $REENROLL -eq 0 && $FORCE -eq 0 ]]; then
-    AGENT_ID=$(cat "$DATA_DIR/agent-id" 2>/dev/null || echo "unknown")
-    echo "Dashboard Agent is already installed and configured."
-    echo "Agent ID: $AGENT_ID"
-    echo "Status: Running"
-    echo "Use --reenroll to reconfigure credentials or --force to overwrite."
-    exit 0
+# Check for existing installation or legacy configuration
+EXISTING_CONFIG=""
+if [[ -e /etc/dashboard-agent || -L /etc/dashboard-agent ]]; then
+    EXISTING_CONFIG="/etc/dashboard-agent"
+elif [[ -f "$DATA_DIR/credentials.json" ]]; then
+    EXISTING_CONFIG="$DATA_DIR/credentials.json"
+fi
+
+if [[ -n "$EXISTING_CONFIG" && $FORCE -eq 0 && $REENROLL -eq 0 ]]; then
+    echo "Notice: An existing dashboard-agent configuration was detected ($EXISTING_CONFIG)."
+    if [ -t 0 ]; then
+        read -r -p "Do you want to replace the existing configuration and deploy the new key? [Y/n] " response
+        case "$response" in
+            [nN][oO]|[nN])
+                echo "Installation cancelled by user."
+                exit 0
+                ;;
+            *)
+                echo "Proceeding with replacement..."
+                ;;
+        esac
+    elif [ -c /dev/tty ] && [ -r /dev/tty ]; then
+        read -r -p "Do you want to replace the existing configuration and deploy the new key? [Y/n] " response < /dev/tty || response="y"
+        case "$response" in
+            [nN][oO]|[nN])
+                echo "Installation cancelled by user."
+                exit 0
+                ;;
+            *)
+                echo "Proceeding with replacement..."
+                ;;
+        esac
+    else
+        echo "Non-interactive mode: proceeding with replacement."
+    fi
+fi
+
+# Clean up / backup existing legacy /etc/dashboard-agent
+if [[ -e /etc/dashboard-agent || -L /etc/dashboard-agent ]]; then
+    BACKUP_PATH="/etc/dashboard-agent.bak.$(date +%s)"
+    echo "Backing up existing /etc/dashboard-agent to $BACKUP_PATH..."
+    mv -f /etc/dashboard-agent "$BACKUP_PATH" 2>/dev/null || rm -rf /etc/dashboard-agent
 fi
 
 echo "Installing Kindle Dashboard Agent..."
@@ -147,20 +181,16 @@ fi
 install -d -m 0755 "$LIB_DIR"
 install -d -m 0700 -o dashboard-agent -g dashboard-agent "$DATA_DIR"
 
-# Backup legacy config file if present during enrollment
-if [[ -f /etc/dashboard-agent && -n "$ENROLLMENT_ID" ]]; then
-    mv -f /etc/dashboard-agent /etc/dashboard-agent.legacy.bak 2>/dev/null || true
-fi
-
 # Locate or download agent.py and dashboard-agent.service
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_BUSTER=$(date +%s)
 
 if [[ -f "$SCRIPT_DIR/agent.py" ]]; then
     echo "Using local agent.py..."
     install -m 0755 "$SCRIPT_DIR/agent.py" "$LIB_DIR/agent.py"
 else
     echo "Downloading agent.py from ${REPO_RAW_URL}/agent.py..."
-    curl -fsSL "${REPO_RAW_URL}/agent.py" -o /tmp/dashboard-agent.py
+    curl -fsSL "${REPO_RAW_URL}/agent.py?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent.py
     install -m 0755 /tmp/dashboard-agent.py "$LIB_DIR/agent.py"
     rm -f /tmp/dashboard-agent.py
 fi
@@ -170,7 +200,7 @@ if [[ -f "$SCRIPT_DIR/dashboard-agent.service" ]]; then
     install -m 0644 "$SCRIPT_DIR/dashboard-agent.service" "$SERVICE_FILE"
 else
     echo "Downloading dashboard-agent.service from ${REPO_RAW_URL}/dashboard-agent.service..."
-    curl -fsSL "${REPO_RAW_URL}/dashboard-agent.service" -o /tmp/dashboard-agent.service
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent.service?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent.service
     install -m 0644 /tmp/dashboard-agent.service "$SERVICE_FILE"
     rm -f /tmp/dashboard-agent.service
 fi
