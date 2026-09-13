@@ -253,7 +253,7 @@ fi
 
 # 3. Check other data directories in /var/lib
 for dir in /var/lib/dashboard-agent-*; do
-    if [[ -d "$dir" ]]; then
+    if [[ -d "$dir" && "$dir" != *.bak* ]]; then
         dir_inst="${dir#/var/lib/dashboard-agent-}"
         if [[ -n "$dir_inst" && "$dir_inst" != "$INSTANCE" && "$dir_inst" != "*" ]]; then
             OTHER_INSTANCES+=("dashboard-agent@${dir_inst}")
