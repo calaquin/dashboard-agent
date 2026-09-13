@@ -17,7 +17,7 @@ UNINSTALL=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
-TAG="${DASHBOARD_AGENT_TAG:-v0.3.6}"
+TAG="${DASHBOARD_AGENT_TAG:-v0.3.5}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 prompt_yn() {
@@ -253,7 +253,7 @@ fi
 
 # 3. Check other data directories in /var/lib
 for dir in /var/lib/dashboard-agent-*; do
-    if [[ -d "$dir" && "$dir" != *.bak* ]]; then
+    if [[ -d "$dir" ]]; then
         dir_inst="${dir#/var/lib/dashboard-agent-}"
         if [[ -n "$dir_inst" && "$dir_inst" != "$INSTANCE" && "$dir_inst" != "*" ]]; then
             OTHER_INSTANCES+=("dashboard-agent@${dir_inst}")
