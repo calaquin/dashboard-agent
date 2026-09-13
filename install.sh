@@ -19,6 +19,7 @@ REENROLL=0
 REMOVE_OLD=0
 FORCE=0
 TAG="${DASHBOARD_AGENT_TAG:-v0.3.11}"
+TAG="${DASHBOARD_AGENT_TAG:-v0.3.12}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 prompt_yn() {
