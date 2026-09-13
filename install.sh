@@ -13,9 +13,33 @@ INSTANCE=""
 BIND="0.0.0.0"
 ENABLE_DOCKER=0
 REENROLL=0
+REMOVE_OLD=0
 FORCE=0
 TAG="${DASHBOARD_AGENT_TAG:-main}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
+
+prompt_yn() {
+    local prompt_text="$1"
+    local default_ans="${2:-n}"
+    local response=""
+
+    if [ -t 0 ]; then
+        read -r -p "$prompt_text " response
+    elif [ -c /dev/tty ] && [ -r /dev/tty ]; then
+        read -r -p "$prompt_text " response < /dev/tty || response="$default_ans"
+    else
+        response="$default_ans"
+    fi
+
+    case "$response" in
+        [yY][eE][sS]|[yY])
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 usage() {
     cat <<EOF
@@ -30,6 +54,7 @@ Options:
   --instance <NAME>              Agent instance name (default: port or 'default')
   --bind <ADDRESS>               Agent bind address (default: 0.0.0.0)
   --enable-docker                Grant dashboard-agent access to Docker daemon
+  --remove-old                   Automatically remove other existing agent instances
   --reenroll                     Replace existing enrollment/credentials
   --force                        Force reinstallation
   --tag <TAG>                    Git tag or branch for asset download (default: main)
@@ -70,6 +95,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-docker)
             ENABLE_DOCKER=1
+            shift
+            ;;
+        --remove-old)
+            REMOVE_OLD=1
             shift
             ;;
         --reenroll)
@@ -130,7 +159,7 @@ LIB_DIR="/usr/local/lib/dashboard-agent"
 SERVICE_FILE="/etc/systemd/system/dashboard-agent.service"
 SERVICE_FILE_TEMPLATE="/etc/systemd/system/dashboard-agent@.service"
 
-# Check for existing installation or legacy configuration
+# Check for existing installation or legacy configuration for THIS instance
 EXISTING_CONFIG=""
 if [[ "$INSTANCE" == "default" && (-e /etc/dashboard-agent || -L /etc/dashboard-agent) ]]; then
     EXISTING_CONFIG="/etc/dashboard-agent"
@@ -139,40 +168,100 @@ elif [[ -f "$DATA_DIR/credentials.json" ]]; then
 fi
 
 if [[ -n "$EXISTING_CONFIG" && $FORCE -eq 0 && $REENROLL -eq 0 ]]; then
-    echo "Notice: An existing dashboard-agent configuration was detected ($EXISTING_CONFIG)."
-    if [ -t 0 ]; then
-        read -r -p "Do you want to replace the existing configuration and deploy the new key? [Y/n] " response
-        case "$response" in
-            [nN][oO]|[nN])
-                echo "Installation cancelled by user."
-                exit 0
-                ;;
-            *)
-                echo "Proceeding with replacement..."
-                ;;
-        esac
-    elif [ -c /dev/tty ] && [ -r /dev/tty ]; then
-        read -r -p "Do you want to replace the existing configuration and deploy the new key? [Y/n] " response < /dev/tty || response="y"
-        case "$response" in
-            [nN][oO]|[nN])
-                echo "Installation cancelled by user."
-                exit 0
-                ;;
-            *)
-                echo "Proceeding with replacement..."
-                ;;
-        esac
+    echo "Notice: An existing dashboard-agent configuration was detected for instance '$INSTANCE' ($EXISTING_CONFIG)."
+    if prompt_yn "Do you want to replace the existing configuration and deploy the new key? [Y/n]" "y"; then
+        echo "Proceeding with replacement..."
     else
-        echo "Non-interactive mode: proceeding with replacement."
+        echo "Installation cancelled by user."
+        exit 0
     fi
 fi
 
-# Clean up / backup existing legacy /etc/dashboard-agent
+# Clean up / backup existing legacy /etc/dashboard-agent if configuring default instance
 if [[ "$INSTANCE" == "default" && (-e /etc/dashboard-agent || -L /etc/dashboard-agent) ]]; then
     BACKUP_PATH="/etc/dashboard-agent.bak.$(date +%s)"
     echo "Backing up existing /etc/dashboard-agent to $BACKUP_PATH..."
     mv -f /etc/dashboard-agent "$BACKUP_PATH" 2>/dev/null || rm -rf /etc/dashboard-agent
 fi
+
+# Check for other old / existing agent instances on this host
+OTHER_INSTANCES=()
+
+# 1. Check default single-instance service if we are installing a multi-instance service
+if [[ "$SERVICE_NAME" != "dashboard-agent" ]]; then
+    if (command -v systemctl >/dev/null 2>&1 && (systemctl is-active --quiet dashboard-agent 2>/dev/null || systemctl is-enabled --quiet dashboard-agent 2>/dev/null)) || [[ -d "/var/lib/dashboard-agent" || -e "/etc/dashboard-agent" ]]; then
+        OTHER_INSTANCES+=("dashboard-agent")
+    fi
+fi
+
+# 2. Check other template services currently loaded or active
+if command -v systemctl >/dev/null 2>&1; then
+    while IFS= read -r unit; do
+        [[ -z "$unit" ]] && continue
+        local_inst="${unit#dashboard-agent@}"
+        local_inst="${local_inst%.service}"
+        if [[ -n "$local_inst" && "$local_inst" != "$INSTANCE" ]]; then
+            OTHER_INSTANCES+=("dashboard-agent@${local_inst}")
+        fi
+    done < <(systemctl list-units --type=service --state=active,loaded "dashboard-agent@*.service" --no-legend 2>/dev/null | awk '{print $1}' || true)
+fi
+
+# 3. Check other data directories in /var/lib
+for dir in /var/lib/dashboard-agent-*; do
+    if [[ -d "$dir" ]]; then
+        dir_inst="${dir#/var/lib/dashboard-agent-}"
+        if [[ -n "$dir_inst" && "$dir_inst" != "$INSTANCE" && "$dir_inst" != "*" ]]; then
+            OTHER_INSTANCES+=("dashboard-agent@${dir_inst}")
+        fi
+    fi
+done
+
+# Deduplicate old instances list
+OLD_INSTANCES=()
+if [[ ${#OTHER_INSTANCES[@]} -gt 0 ]]; then
+    while IFS= read -r item; do
+        [[ -n "$item" ]] && OLD_INSTANCES+=("$item")
+    done < <(printf "%s\n" "${OTHER_INSTANCES[@]}" | sort -u)
+fi
+
+# Offer to stop, disable, and remove old instances
+for old_svc in "${OLD_INSTANCES[@]}"; do
+    old_status="inactive"
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$old_svc" 2>/dev/null; then
+        old_status="active"
+    elif command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "$old_svc" 2>/dev/null; then
+        old_status="enabled"
+    fi
+
+    if [[ "$old_svc" == "dashboard-agent" ]]; then
+        old_data_dir="/var/lib/dashboard-agent"
+    else
+        old_inst="${old_svc#dashboard-agent@}"
+        old_inst="${old_inst%.service}"
+        old_data_dir="/var/lib/dashboard-agent-${old_inst}"
+    fi
+
+    echo ""
+    echo "Notice: Detected an existing old agent instance '$old_svc' (Status: $old_status, Data: $old_data_dir)."
+    if [[ $REMOVE_OLD -eq 1 ]] || prompt_yn "Would you like to stop, disable, and remove this old instance? [y/N]" "n"; then
+        echo "Stopping and disabling $old_svc..."
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop "$old_svc" 2>/dev/null || true
+            systemctl disable "$old_svc" 2>/dev/null || true
+        fi
+        if [[ -d "$old_data_dir" ]]; then
+            backup_dir="${old_data_dir}.bak.$(date +%s)"
+            echo "Backing up and removing $old_data_dir -> $backup_dir..."
+            mv -f "$old_data_dir" "$backup_dir" 2>/dev/null || rm -rf "$old_data_dir"
+        fi
+        if [[ "$old_svc" == "dashboard-agent" && (-e /etc/dashboard-agent || -L /etc/dashboard-agent) ]]; then
+            rm -rf /etc/dashboard-agent 2>/dev/null || true
+        fi
+        echo "✓ Successfully removed old instance '$old_svc'."
+    else
+        echo "Keeping old instance '$old_svc'."
+    fi
+done
 
 echo "Installing Kindle Dashboard Agent..."
 
