@@ -18,7 +18,7 @@ UNINSTALL=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
-TAG="${DASHBOARD_AGENT_TAG:-v0.3.9}"
+TAG="${DASHBOARD_AGENT_TAG:-v0.3.10}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 prompt_yn() {
@@ -435,7 +435,7 @@ EOF
     if [[ $ENABLE_SNAPRAID -eq 1 ]]; then
         echo "Configuring SnapRAID sudoers permissions..."
         cat <<EOF > /etc/sudoers.d/dashboard-agent-snapraid
-dashboard-agent ALL=(ALL) NOPASSWD: /usr/bin/snapraid status, /usr/local/bin/snapraid status, /bin/snapraid status
+dashboard-agent ALL=(ALL) NOPASSWD: /usr/bin/snapraid, /usr/bin/snapraid *, /usr/local/bin/snapraid, /usr/local/bin/snapraid *, /bin/snapraid, /bin/snapraid *, /usr/sbin/snapraid, /usr/sbin/snapraid *, /snap/bin/snapraid, /snap/bin/snapraid *
 EOF
         chmod 0440 /etc/sudoers.d/dashboard-agent-snapraid 2>/dev/null || true
     fi

@@ -32,7 +32,7 @@ def parse_port(value, default=8100):
 PORT = parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), 8100)
 
 AGENT_NAME = "dashboard-agent"
-AGENT_VERSION = "0.3.9"
+AGENT_VERSION = "0.3.10"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
 
@@ -630,6 +630,14 @@ def wan_available():
 
 
 def snapraid_status():
+    enable_snapraid_env = os.environ.get("DASHBOARD_AGENT_ENABLE_SNAPRAID", "").lower()
+    if enable_snapraid_env in ("0", "false", "no", "off"):
+        return {
+            "available": False,
+            "state": "disabled",
+            "summary": "SnapRAID monitoring disabled"
+        }
+
     now = time.time()
 
     if (
@@ -640,6 +648,11 @@ def snapraid_status():
         return snapraid_cache["data"]
 
     executable = shutil.which("snapraid")
+    if not executable:
+        for candidate in ("/usr/bin/snapraid", "/usr/local/bin/snapraid", "/usr/sbin/snapraid", "/bin/snapraid"):
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                executable = candidate
+                break
 
     if not executable:
         data = {

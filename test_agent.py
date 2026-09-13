@@ -581,7 +581,44 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(sent[0][0], 401)
 
 
+class SnapraidStatusTests(unittest.TestCase):
+
+    def setUp(self):
+        agent.snapraid_cache["data"] = None
+        agent.snapraid_cache["time"] = 0
+
+    def test_disabled_via_env(self):
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ENABLE_SNAPRAID": "0"}):
+            res = agent.snapraid_status()
+            self.assertFalse(res["available"])
+            self.assertEqual(res["state"], "disabled")
+
+    @mock.patch("agent.shutil.which", return_value=None)
+    @mock.patch("agent.os.path.exists", return_value=False)
+    def test_missing_binary(self, mock_exists, mock_which):
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ENABLE_SNAPRAID": "1"}):
+            res = agent.snapraid_status()
+            self.assertFalse(res["available"])
+            self.assertEqual(res["state"], "missing")
+
+    @mock.patch("agent.shutil.which", return_value="/usr/bin/snapraid")
+    @mock.patch("agent.run_command")
+    def test_sudo_success_parsing(self, mock_run, mock_which):
+        agent.snapraid_cache["data"] = None
+        agent.snapraid_cache["time"] = 0
+        mock_run.side_effect = [
+            (1, "", "sudo: a password is required"),
+            (0, "Self test...\nNo error detected.\n100% of the array is scrubbed.\nOldest block was scrubbed 2 days ago.", "")
+        ]
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ENABLE_SNAPRAID": "1"}):
+            res = agent.snapraid_status()
+            self.assertTrue(res["available"])
+            self.assertEqual(res["state"], "ok")
+            self.assertIn("100% scrubbed", res["summary"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
