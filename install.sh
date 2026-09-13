@@ -13,11 +13,12 @@ INSTANCE=""
 BIND="0.0.0.0"
 ENABLE_DOCKER=0
 ENABLE_POWER=0
+ENABLE_SNAPRAID=0
 UNINSTALL=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
-TAG="${DASHBOARD_AGENT_TAG:-v0.3.7}"
+TAG="${DASHBOARD_AGENT_TAG:-v0.3.8}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 prompt_yn() {
@@ -57,11 +58,12 @@ Options:
   --bind <ADDRESS>               Agent bind address (default: 0.0.0.0)
   --enable-docker                Grant dashboard-agent access to Docker daemon
   --enable-power                 Grant dashboard-agent permission to reboot/shutdown host
+  --enable-snapraid              Grant dashboard-agent permission to run 'snapraid status'
   --uninstall                    Stop, disable, and remove agent instance
-  --remove-old                   Automatically remove other existing agent instances
-  --reenroll                     Replace existing enrollment/credentials
-  --force                        Force reinstallation
-  --tag <TAG>                    Git tag or branch for asset download (default: main)
+  --remove-old                   Automatically remove old/superseded agent instances
+  --reenroll                     Re-enroll existing instance with new credentials
+  --force                        Non-interactive execution, accept defaults
+  --tag <TAG>                    Specify release tag to install (e.g. v0.3.8)
   -h, --help                     Show this help message
 EOF
     exit 1
@@ -103,6 +105,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-power)
             ENABLE_POWER=1
+            shift
+            ;;
+        --enable-snapraid)
+            ENABLE_SNAPRAID=1
             shift
             ;;
         --uninstall)
@@ -423,6 +429,12 @@ EOF
         cat <<EOF > /etc/sudoers.d/dashboard-agent-power
 dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*
 EOF
+    if [[ $ENABLE_SNAPRAID -eq 1 ]]; then
+        echo "Configuring SnapRAID sudoers permissions..."
+        cat <<EOF > /etc/sudoers.d/dashboard-agent-snapraid
+dashboard-agent ALL=(ALL) NOPASSWD: /usr/bin/snapraid status, /usr/local/bin/snapraid status, /bin/snapraid status
+EOF
+        chmod 0440 /etc/sudoers.d/dashboard-agent-snapraid 2>/dev/null || true
     fi
     chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
 fi
@@ -434,6 +446,7 @@ DASHBOARD_AGENT_PORT=${PORT}
 DASHBOARD_AGENT_BIND=${BIND}
 DASHBOARD_AGENT_DATA_DIR=${DATA_DIR}
 DASHBOARD_AGENT_ALLOW_POWER=${ENABLE_POWER}
+DASHBOARD_AGENT_ENABLE_SNAPRAID=${ENABLE_SNAPRAID}
 EOF
 install -m 0600 -o dashboard-agent -g dashboard-agent "$ENV_TMP" "$DATA_DIR/agent.env"
 rm -f "$ENV_TMP"
