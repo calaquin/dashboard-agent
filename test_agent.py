@@ -517,6 +517,70 @@ class HardwareProfileTests(unittest.TestCase):
         self.assertIn("platform", sent[0][1])
 
 
+class UninstallTests(unittest.TestCase):
+
+    def test_determine_service_name_default(self):
+        svc = agent.determine_service_name("/var/lib/dashboard-agent")
+        self.assertEqual(svc, "dashboard-agent")
+
+    def test_determine_service_name_instance(self):
+        svc = agent.determine_service_name("/var/lib/dashboard-agent-development")
+        self.assertEqual(svc, "dashboard-agent@development")
+        svc2 = agent.determine_service_name("/var/lib/dashboard-agent-8105")
+        self.assertEqual(svc2, "dashboard-agent@8105")
+
+    @mock.patch("agent.threading.Thread")
+    def test_execute_uninstallation(self, mock_thread):
+        res = agent.execute_uninstallation(data_dir="/var/lib/dashboard-agent-dev", purge_data=True, remove_service=True)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "uninstalling")
+        self.assertEqual(res["service"], "dashboard-agent@dev")
+        mock_thread.assert_called_once()
+
+    @mock.patch("agent.execute_uninstallation")
+    def test_uninstall_endpoint_authorized(self, mock_uninst):
+        mock_uninst.return_value = {
+            "ok": True,
+            "status": "uninstalling",
+            "service": "dashboard-agent@dev",
+            "message": "Agent service stopping"
+        }
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "valid-token"
+        handler.headers = {
+            "Authorization": "Bearer valid-token",
+            "Content-Length": "31"
+        }
+        handler.path = "/api/uninstall"
+        handler.data_dir = "/var/lib/dashboard-agent-dev"
+        handler.read_json = lambda: {"purge_data": True, "remove_service": True}
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.do_POST()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertTrue(sent[0][1]["ok"])
+        self.assertEqual(sent[0][1]["status"], "uninstalling")
+        mock_uninst.assert_called_once_with(
+            data_dir="/var/lib/dashboard-agent-dev",
+            purge_data=True,
+            remove_service=True
+        )
+
+    def test_uninstall_endpoint_unauthorized(self):
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "valid-token"
+        handler.headers = {"Authorization": "Bearer wrong-token"}
+        handler.path = "/api/uninstall"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.do_POST()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 401)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -13,6 +13,7 @@ INSTANCE=""
 BIND="0.0.0.0"
 ENABLE_DOCKER=0
 ENABLE_POWER=0
+UNINSTALL=0
 REENROLL=0
 REMOVE_OLD=0
 FORCE=0
@@ -56,6 +57,7 @@ Options:
   --bind <ADDRESS>               Agent bind address (default: 0.0.0.0)
   --enable-docker                Grant dashboard-agent access to Docker daemon
   --enable-power                 Grant dashboard-agent permission to reboot/shutdown host
+  --uninstall                    Stop, disable, and remove agent instance
   --remove-old                   Automatically remove other existing agent instances
   --reenroll                     Replace existing enrollment/credentials
   --force                        Force reinstallation
@@ -103,6 +105,10 @@ while [[ $# -gt 0 ]]; do
             ENABLE_POWER=1
             shift
             ;;
+        --uninstall)
+            UNINSTALL=1
+            shift
+            ;;
         --remove-old)
             REMOVE_OLD=1
             shift
@@ -129,6 +135,39 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ $UNINSTALL -eq 1 ]]; then
+    if [[ $EUID -ne 0 ]]; then
+        echo "Error: install.sh --uninstall must be run as root (e.g. using sudo)." >&2
+        exit 1
+    fi
+    if [[ -z "$INSTANCE" ]]; then
+        if [[ "$PORT" != "8100" ]]; then
+            INSTANCE="$PORT"
+        else
+            INSTANCE="default"
+        fi
+    fi
+    if [[ "$INSTANCE" == "default" ]]; then
+        DATA_DIR="/var/lib/dashboard-agent"
+        SERVICE_NAME="dashboard-agent"
+    else
+        DATA_DIR="/var/lib/dashboard-agent-${INSTANCE}"
+        SERVICE_NAME="dashboard-agent@${INSTANCE}"
+    fi
+
+    echo "Stopping and disabling ${SERVICE_NAME}..."
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+        systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    fi
+    if [[ -d "$DATA_DIR" ]]; then
+        echo "Removing data directory $DATA_DIR..."
+        rm -rf "$DATA_DIR"
+    fi
+    echo "✓ Successfully uninstalled ${SERVICE_NAME}."
+    exit 0
+fi
 
 if [[ -z "$ENROLLMENT_ID" && -z "$BOOTSTRAP_TOKEN" && -z "$TOKEN" ]]; then
     echo "Error: Either (--enrollment-id and --bootstrap-token) or --token is required." >&2
@@ -374,11 +413,21 @@ fi
 if [[ $ENABLE_POWER -eq 1 ]]; then
     echo "Configuring host power management permissions (reboot/shutdown enabled)..."
     if [[ -d /etc/sudoers.d ]]; then
+# Handle service management and host power permissions
+echo "Configuring service permissions..."
+if [[ -d /etc/sudoers.d ]]; then
+    if [[ $ENABLE_POWER -eq 1 ]]; then
         cat <<EOF > /etc/sudoers.d/dashboard-agent-power
 dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /bin/systemctl poweroff, /sbin/reboot, /sbin/shutdown
+dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /bin/systemctl poweroff, /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*, /sbin/reboot, /sbin/shutdown
 EOF
         chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
+    else
+        cat <<EOF > /etc/sudoers.d/dashboard-agent-power
+dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*
+EOF
     fi
+    chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
 fi
 
 # Write instance configuration environment file
