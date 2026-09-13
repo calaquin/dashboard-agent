@@ -339,14 +339,12 @@ install -d -m 0700 -o dashboard-agent -g dashboard-agent "$DATA_DIR"
 chown -R dashboard-agent:dashboard-agent "$LIB_DIR" 2>/dev/null || true
 
 # Locate or download agent.py and dashboard-agent.service
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR=""
 if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 fi
 CACHE_BUSTER=$(date +%s)
 
-if [[ -f "$SCRIPT_DIR/agent.py" ]]; then
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/agent.py" ]]; then
     echo "Using local agent.py..."
     install -m 0755 "$SCRIPT_DIR/agent.py" "$LIB_DIR/agent.py"
@@ -357,7 +355,6 @@ else
     rm -f /tmp/dashboard-agent.py
 fi
 
-if [[ -f "$SCRIPT_DIR/dashboard-agent.service" ]]; then
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent.service" ]]; then
     echo "Using local dashboard-agent.service..."
     install -m 0644 "$SCRIPT_DIR/dashboard-agent.service" "$SERVICE_FILE"
@@ -368,7 +365,6 @@ else
     rm -f /tmp/dashboard-agent.service
 fi
 
-if [[ -f "$SCRIPT_DIR/dashboard-agent@.service" ]]; then
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent@.service" ]]; then
     echo "Using local dashboard-agent@.service..."
     install -m 0644 "$SCRIPT_DIR/dashboard-agent@.service" "$SERVICE_FILE_TEMPLATE"
@@ -416,19 +412,13 @@ EOF
     rm -f "$DATA_DIR/enrollment.json"
 fi
 
-# Handle host power management permissions
-if [[ $ENABLE_POWER -eq 1 ]]; then
-    echo "Configuring host power management permissions (reboot/shutdown enabled)..."
-    if [[ -d /etc/sudoers.d ]]; then
 # Handle service management and host power permissions
 echo "Configuring service permissions..."
 if [[ -d /etc/sudoers.d ]]; then
     if [[ $ENABLE_POWER -eq 1 ]]; then
         cat <<EOF > /etc/sudoers.d/dashboard-agent-power
-dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /bin/systemctl poweroff, /sbin/reboot, /sbin/shutdown
 dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /bin/systemctl poweroff, /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*, /sbin/reboot, /sbin/shutdown
 EOF
-        chmod 0440 /etc/sudoers.d/dashboard-agent-power 2>/dev/null || true
     else
         cat <<EOF > /etc/sudoers.d/dashboard-agent-power
 dashboard-agent ALL=(ALL) NOPASSWD: /bin/systemctl stop dashboard-agent*, /bin/systemctl disable dashboard-agent*, /usr/bin/systemctl stop dashboard-agent*, /usr/bin/systemctl disable dashboard-agent*

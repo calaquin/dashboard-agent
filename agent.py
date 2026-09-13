@@ -131,9 +131,11 @@ CAPABILITIES = [
     "metrics.storage",
     "metrics.docker",
     "metrics.snapraid",
+    "profile.hardware.v1",
     "controls.docker.v1",
     "controls.power.v1",
     "controls.update.v1",
+    "controls.uninstall.v1",
 ]
 
 STATUS_CACHE_SECONDS = 5
@@ -830,6 +832,239 @@ class JsonHandlerMixin:
         )
 
 
+def collect_cpu_profile():
+    cpu_info = {
+        "model": "Unknown CPU",
+        "arch": os.uname().machine if hasattr(os, "uname") else "unknown",
+        "cores_physical": 1,
+        "threads_logical": os.cpu_count() or 1,
+        "mhz_max": None,
+        "mhz_min": None,
+        "mhz_cur": None,
+        "l1_cache": None,
+        "l2_cache": None,
+        "l3_cache": None,
+        "flags": []
+    }
+    try:
+        if Path("/proc/cpuinfo").exists():
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as handle:
+                core_ids = set()
+                flags = set()
+                for line in handle:
+                    line = line.strip()
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        k = k.strip().lower()
+                        v = v.strip()
+                        if k in ("model name", "hardware", "cpu architecture", "processor"):
+                            if cpu_info["model"] == "Unknown CPU" and v:
+                                cpu_info["model"] = v
+                        elif k == "cpu mhz" and not cpu_info["mhz_cur"]:
+                            try:
+                                cpu_info["mhz_cur"] = round(float(v), 1)
+                            except ValueError:
+                                pass
+                        elif k == "core id":
+                            core_ids.add(v)
+                        elif k in ("flags", "features"):
+                            flags.update(v.split())
+                if core_ids:
+                    cpu_info["cores_physical"] = len(core_ids)
+                else:
+                    cpu_info["cores_physical"] = cpu_info["threads_logical"]
+                cpu_info["flags"] = sorted(list(flags))[:30]
+    except Exception:
+        pass
+
+    try:
+        max_freq_path = Path("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+        if max_freq_path.exists():
+            cpu_info["mhz_max"] = round(int(max_freq_path.read_text().strip()) / 1000.0, 1)
+        min_freq_path = Path("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq")
+        if min_freq_path.exists():
+            cpu_info["mhz_min"] = round(int(min_freq_path.read_text().strip()) / 1000.0, 1)
+    except Exception:
+        pass
+
+    return cpu_info
+
+
+def collect_platform_profile():
+    plat = {
+        "board_vendor": "",
+        "board_name": "",
+        "product_name": "",
+        "bios_version": "",
+        "virtualization": "none",
+        "uefi": False
+    }
+    try:
+        dmi_path = Path("/sys/class/dmi/id")
+        if dmi_path.exists():
+            for key, field in [
+                ("sys_vendor", "board_vendor"),
+                ("board_name", "board_name"),
+                ("product_name", "product_name"),
+                ("bios_version", "bios_version")
+            ]:
+                f = dmi_path / key
+                if f.exists():
+                    try:
+                        plat[field] = f.read_text().strip()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    try:
+        dt_model = Path("/sys/firmware/devicetree/base/model")
+        if dt_model.exists():
+            plat["board_name"] = dt_model.read_bytes().decode("utf-8", errors="replace").replace("\x00", "").strip()
+    except Exception:
+        pass
+
+    if Path("/sys/firmware/efi").exists():
+        plat["uefi"] = True
+
+    code, out, _ = run_command(["systemd-detect-virt"], timeout=2)
+    if code == 0 and out.strip():
+        plat["virtualization"] = out.strip()
+
+    return plat
+
+
+def collect_os_profile():
+    os_info = {
+        "distro": "Linux",
+        "version": "",
+        "kernel": os.uname().release if hasattr(os, "uname") else "",
+        "arch": os.uname().machine if hasattr(os, "uname") else ""
+    }
+    try:
+        if Path("/etc/os-release").exists():
+            with open("/etc/os-release", "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        v = v.strip('"\'')
+                        if k == "PRETTY_NAME":
+                            os_info["distro"] = v
+                        elif k == "VERSION_ID" and not os_info["version"]:
+                            os_info["version"] = v
+    except Exception:
+        pass
+    return os_info
+
+
+def collect_memory_profile():
+    mem = memory_status()
+    total_mb = mem.get("total_mb", 0)
+    used_mb = mem.get("used_mb", 0)
+    free_mb = max(0, total_mb - used_mb)
+    return {
+        "total_mb": total_mb,
+        "used_mb": used_mb,
+        "free_mb": free_mb,
+        "percent": mem.get("percent")
+    }
+
+
+def collect_network_interfaces():
+    ifaces = []
+    net_path = Path("/sys/class/net")
+    if net_path.exists():
+        try:
+            for iface_dir in sorted(net_path.iterdir()):
+                name = iface_dir.name
+                if name == "lo":
+                    continue
+                mac = ""
+                speed = None
+                operstate = "unknown"
+                try:
+                    addr_file = iface_dir / "address"
+                    if addr_file.exists():
+                        mac = addr_file.read_text().strip().upper()
+                except Exception:
+                    pass
+                try:
+                    speed_file = iface_dir / "speed"
+                    if speed_file.exists():
+                        val = int(speed_file.read_text().strip())
+                        if val > 0:
+                            speed = "%d Mbps" % val
+                except Exception:
+                    pass
+                try:
+                    state_file = iface_dir / "operstate"
+                    if state_file.exists():
+                        operstate = state_file.read_text().strip()
+                except Exception:
+                    pass
+                ifaces.append({
+                    "name": name,
+                    "mac": mac,
+                    "speed": speed,
+                    "state": operstate
+                })
+        except Exception:
+            pass
+    return ifaces
+
+
+def collect_gpu_profile():
+    gpus = []
+    code, out, _ = run_command(["lspci"], timeout=3)
+    if code == 0:
+        for line in out.splitlines():
+            line_lower = line.lower()
+            if "vga compatible controller" in line_lower or "3d controller" in line_lower or "display controller" in line_lower:
+                parts = line.split(":", 2)
+                name = parts[-1].strip() if len(parts) >= 3 else line.strip()
+                gpus.append({"model": name, "type": "PCIe"})
+    if not gpus:
+        code_nvi, out_nvi, _ = run_command(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], timeout=3)
+        if code_nvi == 0:
+            for line in out_nvi.splitlines():
+                if line.strip():
+                    gpus.append({"model": line.strip(), "type": "NVIDIA"})
+    return gpus
+
+
+def collect_storage_devices():
+    devices = []
+    code, out, _ = run_command(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,TRAN,ROTA"], timeout=3)
+    if code == 0:
+        try:
+            parsed = json.loads(out)
+            for block in parsed.get("blockdevices", []):
+                if block.get("type") in ("disk", "rom"):
+                    devices.append({
+                        "name": block.get("name", ""),
+                        "size": block.get("size", ""),
+                        "model": (block.get("model") or "").strip(),
+                        "transport": block.get("tran", ""),
+                        "rotational": bool(block.get("rota", 1))
+                    })
+        except Exception:
+            pass
+    return devices
+
+
+def collect_hardware_profile():
+    return {
+        "cpu": collect_cpu_profile(),
+        "platform": collect_platform_profile(),
+        "os": collect_os_profile(),
+        "memory": collect_memory_profile(),
+        "network_interfaces": collect_network_interfaces(),
+        "gpu": collect_gpu_profile(),
+        "storage_devices": collect_storage_devices(),
+        "timestamp": int(time.time())
+    }
+
+
 ALLOWED_ACTIONS = {"start", "stop", "restart", "pause", "unpause"}
 
 
@@ -884,6 +1119,70 @@ def execute_host_power_action(action):
     if code != 0:
         return (500, {"error": err or "Failed to %s host" % action})
     return (200, {"ok": True, "action": action, "output": out})
+
+
+def determine_service_name(data_dir=None):
+    target_data_dir = Path(data_dir).resolve() if data_dir else DATA_DIR.resolve()
+    dir_name = target_data_dir.name
+    if dir_name == "dashboard-agent":
+        return "dashboard-agent"
+    if dir_name.startswith("dashboard-agent-"):
+        instance = dir_name[len("dashboard-agent-"):]
+        return "dashboard-agent@%s" % instance
+    return "dashboard-agent"
+
+
+def execute_uninstallation(data_dir=None, purge_data=True, remove_service=True):
+    target_data_dir = Path(data_dir).resolve() if data_dir else DATA_DIR.resolve()
+    service_name = determine_service_name(target_data_dir)
+
+    def _cleanup_worker():
+        time.sleep(0.5)
+        # 1. Stop and disable systemd service
+        if remove_service:
+            for cmd in (
+                ["systemctl", "stop", service_name],
+                ["sudo", "-n", "systemctl", "stop", service_name],
+                ["systemctl", "disable", service_name],
+                ["sudo", "-n", "systemctl", "disable", service_name],
+            ):
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=5)
+                except Exception:
+                    pass
+
+        # 2. Purge data directory (credentials, agent-id, logs, agent.env)
+        if purge_data and target_data_dir.exists():
+            try:
+                for item in list(target_data_dir.iterdir()):
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink()
+                    except Exception:
+                        pass
+                try:
+                    target_data_dir.rmdir()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # 3. Terminate agent process
+        os._exit(0)
+
+    t = threading.Thread(target=_cleanup_worker)
+    t.daemon = True
+    t.start()
+
+    return {
+        "ok": True,
+        "status": "uninstalling",
+        "service": service_name,
+        "data_dir": str(target_data_dir),
+        "message": "Agent service stopping and instance data removed."
+    }
 
 
 class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
@@ -1019,6 +1318,13 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 self.send_json(500, {"error": str(exc)})
             return
 
+        if path == "/api/profile":
+            try:
+                self.send_json(200, collect_hardware_profile())
+            except Exception as exc:
+                self.send_json(500, {"error": str(exc)})
+            return
+
         logs_match = re.match(r"^/api/containers/([a-zA-Z0-9_.-]+)/logs$", path)
         if logs_match:
             container_name = logs_match.group(1)
@@ -1107,6 +1413,24 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
             action = power_match.group(1)
             status_code, response = execute_host_power_action(action)
             self.send_json(status_code, response)
+            return
+
+        if path == "/api/uninstall":
+            body = self.read_json()
+            purge_data = True
+            remove_service = True
+            if isinstance(body, dict):
+                if "purge_data" in body:
+                    purge_data = bool(body["purge_data"])
+                if "remove_service" in body:
+                    remove_service = bool(body["remove_service"])
+
+            res = execute_uninstallation(
+                data_dir=self.data_dir,
+                purge_data=purge_data,
+                remove_service=remove_service
+            )
+            self.send_json(200, res)
             return
 
         if path == "/api/update":
