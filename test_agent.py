@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -306,8 +308,108 @@ class EnrollmentProtocolTests(unittest.TestCase):
         self.assertFalse(handler.is_authorized())
 
 
+class AgentSelfUpdateTests(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.lib_dir = Path(self.temp_dir.name) / "lib"
+        self.lib_dir.mkdir()
+        self.agent_file = self.lib_dir / "agent.py"
+        self.agent_file.write_text('#!/usr/bin/env python3\nAGENT_VERSION = "0.3.0"\n', encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_update_requires_authorization(self):
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "perm-token"
+        handler.headers = {"Authorization": "Bearer wrong-token"}
+        handler.path = "/api/update"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.do_POST()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 401)
+
+    @mock.patch("urllib.request.urlopen")
+    def test_update_downloads_validates_and_replaces(self, mock_urlopen):
+        new_code = (
+            b'#!/usr/bin/env python3\n'
+            b'# Kindle Dashboard Agent Self-Update Test File\n'
+            b'AGENT_VERSION = "0.3.2"\n'
+            b'def main():\n'
+            b'    print("updated")\n'
+            b'if __name__ == "__main__":\n'
+            b'    main()\n'
+        )
+        mock_resp = mock.MagicMock()
+        mock_resp.status = 200
+        mock_resp.code = 200
+        mock_resp.read.return_value = new_code
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "perm-token"
+        handler.headers = {"Authorization": "Bearer perm-token"}
+        handler.path = "/api/update"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        with mock.patch("agent.Path") as mock_path:
+            def path_side_effect(arg):
+                if str(arg) in ("/usr/local/lib/dashboard-agent/agent.py", str(self.agent_file)):
+                    return self.agent_file
+                return Path(arg)
+            mock_path.side_effect = path_side_effect
+
+            handler.do_POST()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertEqual(sent[0][1]["status"], "updated")
+        self.assertEqual(sent[0][1]["from_version"], "0.3.1")
+        self.assertEqual(sent[0][1]["to_version"], "0.3.2")
+        self.assertEqual(self.agent_file.read_bytes(), new_code)
+
+    @mock.patch("urllib.request.urlopen")
+    def test_update_rejects_syntax_errors(self, mock_urlopen):
+        invalid_code = (
+            b'#!/usr/bin/env python3\n'
+            b'# Invalid Syntax Test File for Dashboard Agent Update\n'
+            b'AGENT_VERSION = "0.3.1"\n'
+            b'def broken(:\n'
+            b'    pass\n'
+        )
+        mock_resp = mock.MagicMock()
+        mock_resp.status = 200
+        mock_resp.code = 200
+        mock_resp.read.return_value = invalid_code
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "perm-token"
+        handler.headers = {"Authorization": "Bearer perm-token"}
+        handler.path = "/api/update"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        with mock.patch("agent.Path") as mock_path:
+            def path_side_effect(arg):
+                if str(arg) in ("/usr/local/lib/dashboard-agent/agent.py", str(self.agent_file)):
+                    return self.agent_file
+                return Path(arg)
+            mock_path.side_effect = path_side_effect
+
+            handler.do_POST()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 400)
+        self.assertIn("verification failed", sent[0][1]["error"])
+        # Original file must remain untouched
+        self.assertIn('AGENT_VERSION = "0.3.0"', self.agent_file.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
-    import time
-    import json
     unittest.main()
 

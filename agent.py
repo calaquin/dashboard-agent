@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import py_compile
 import re
 import shutil
 import socket
@@ -15,12 +16,13 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 PORT = 8100
 
 AGENT_NAME = "dashboard-agent"
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.3.1"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
 
@@ -121,6 +123,7 @@ CAPABILITIES = [
     "metrics.snapraid",
     "controls.docker.v1",
     "controls.power.v1",
+    "controls.update.v1",
 ]
 
 STATUS_CACHE_SECONDS = 5
@@ -1095,6 +1098,75 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
             status_code, response = execute_host_power_action(action)
             self.send_json(status_code, response)
             return
+
+        if path == "/api/update":
+            tag = os.environ.get("DASHBOARD_AGENT_TAG", "main")
+            repo_url = os.environ.get(
+                "DASHBOARD_AGENT_REPO_URL",
+                "https://raw.githubusercontent.com/calaquin/dashboard-agent/%s" % tag
+            )
+            cache_buster = int(time.time())
+            update_url = "%s/agent.py?t=%d" % (repo_url, cache_buster)
+
+            try:
+                req = urllib.request.Request(
+                    update_url,
+                    headers={"User-Agent": "dashboard-agent/%s" % AGENT_VERSION}
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    status_code = getattr(resp, "status", getattr(resp, "code", 200))
+                    if status_code != 200:
+                        self.send_json(502, {"error": "Failed to download update (HTTP %d)" % status_code})
+                        return
+                    code_bytes = resp.read()
+
+                if not code_bytes or len(code_bytes) < 50:
+                    self.send_json(502, {"error": "Downloaded update is empty or invalid"})
+                    return
+
+                new_version = AGENT_VERSION
+                m_ver = re.search(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
+                if m_ver:
+                    new_version = m_ver.group(1)
+
+                target_file = Path(__file__).resolve()
+                lib_file = Path("/usr/local/lib/dashboard-agent/agent.py")
+                if lib_file.exists() or lib_file.parent.exists():
+                    target_file = lib_file
+
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                tmp_new = target_file.parent / (".agent.py.new.%d" % os.getpid())
+                tmp_new.write_bytes(code_bytes)
+                try:
+                    os.chmod(tmp_new, 0o755)
+                    py_compile.compile(str(tmp_new), doraise=True)
+                except Exception as comp_err:
+                    try:
+                        tmp_new.unlink()
+                    except OSError:
+                        pass
+                    self.send_json(400, {"error": "Update verification failed: %s" % comp_err})
+                    return
+
+                os.replace(tmp_new, target_file)
+
+                self.send_json(200, {
+                    "ok": True,
+                    "status": "updated",
+                    "from_version": AGENT_VERSION,
+                    "to_version": new_version
+                })
+
+                def restart_agent():
+                    time.sleep(0.5)
+                    os._exit(0)
+
+                threading.Thread(target=restart_agent, daemon=True).start()
+                return
+
+            except Exception as exc:
+                self.send_json(500, {"error": "Update failed: %s" % exc})
+                return
 
         self.send_json(404, {"error": "Not found"})
 

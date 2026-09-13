@@ -9,14 +9,14 @@ User=dashboard-agent
 Group=dashboard-agent
 EnvironmentFile=-/etc/dashboard-agent
 ExecStart=/usr/local/lib/dashboard-agent/agent.py
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=2
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/dashboard-agent
+ReadWritePaths=/var/lib/dashboard-agent /usr/local/lib/dashboard-agent
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
 

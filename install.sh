@@ -178,8 +178,9 @@ if [[ $ENABLE_DOCKER -eq 1 ]]; then
 fi
 
 # Setup directory permissions
-install -d -m 0755 "$LIB_DIR"
+install -d -m 0755 -o dashboard-agent -g dashboard-agent "$LIB_DIR"
 install -d -m 0700 -o dashboard-agent -g dashboard-agent "$DATA_DIR"
+chown -R dashboard-agent:dashboard-agent "$LIB_DIR" 2>/dev/null || true
 
 # Locate or download agent.py and dashboard-agent.service
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
