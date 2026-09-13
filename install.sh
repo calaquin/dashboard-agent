@@ -282,6 +282,36 @@ print(agent.compute_verification_code('$BOOTSTRAP_TOKEN', '$ENROLLMENT_ID', '$AG
 ============================================================
 
 EOF
+
+    echo "Waiting for verification handshake from Kindle Dashboard (Ctrl+C to exit)..."
+    EXPIRY_TIME=${EXPIRES_AT:-$(( $(date +%s) + 1800 ))}
+
+    trap 'echo -e "\nScript exited. Dashboard Agent service remains running in background waiting for verification."; exit 0' INT
+
+    while true; do
+        if [[ -f "$DATA_DIR/credentials.json" && ! -f "$DATA_DIR/enrollment.json" ]]; then
+            echo ""
+            echo "✓ Verification handshake complete! Device successfully activated."
+            exit 0
+        fi
+
+        CURRENT_TIME=$(date +%s)
+        if [[ $CURRENT_TIME -ge $EXPIRY_TIME ]]; then
+            echo ""
+            echo "✗ Enrollment session expired before verification was completed." >&2
+            exit 1
+        fi
+
+        if command -v systemctl >/dev/null 2>&1; then
+            if ! systemctl is-active --quiet dashboard-agent; then
+                echo ""
+                echo "✗ Error: dashboard-agent service stopped unexpectedly. Check 'journalctl -u dashboard-agent'." >&2
+                exit 1
+            fi
+        fi
+
+        sleep 1
+    done
 else
     echo "✓ Dashboard Agent successfully installed and active."
 fi
