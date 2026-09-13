@@ -13,7 +13,7 @@ BIND="0.0.0.0"
 ENABLE_DOCKER=0
 REENROLL=0
 FORCE=0
-TAG="${DASHBOARD_AGENT_TAG:-v1.0.0}"
+TAG="${DASHBOARD_AGENT_TAG:-main}"
 REPO_RAW_URL="https://raw.githubusercontent.com/calaquin/dashboard-agent/${TAG}"
 
 usage() {
@@ -30,7 +30,7 @@ Options:
   --enable-docker                Grant dashboard-agent access to Docker daemon
   --reenroll                     Replace existing enrollment/credentials
   --force                        Force reinstallation
-  --tag <TAG>                    Git tag or branch for asset download (default: v1.0.0)
+  --tag <TAG>                    Git tag or branch for asset download (default: main)
   -h, --help                     Show this help message
 EOF
     exit 1
