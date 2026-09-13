@@ -7,10 +7,12 @@ Wants=network-online.target
 Type=simple
 User=dashboard-agent
 Group=dashboard-agent
+Environment=DASHBOARD_AGENT_PORT=%i
 Environment=DASHBOARD_AGENT_DATA_DIR=/var/lib/dashboard-agent-%i
 Environment=DASHBOARD_AGENT_INSTANCE=%i
 EnvironmentFile=-/etc/default/dashboard-agent-%i
 EnvironmentFile=-/etc/dashboard-agent-%i
+ExecStart=/usr/local/lib/dashboard-agent/agent.py --port %i --data-dir /var/lib/dashboard-agent-%i
 EnvironmentFile=-/etc/dashboard-agent-%i.env
 EnvironmentFile=-/var/lib/dashboard-agent-%i/agent.env
 ExecStart=/usr/local/lib/dashboard-agent/agent.py --data-dir /var/lib/dashboard-agent-%i
