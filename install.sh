@@ -356,8 +356,13 @@ if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/agent.py" ]]; then
     install -m 0755 "$SCRIPT_DIR/agent.py" "$LIB_DIR/agent.py"
 else
     echo "Downloading agent.py from ${REPO_RAW_URL}/agent.py..."
-    curl -fsSL "${REPO_RAW_URL}/agent.py?t=${CACHE_BUSTER}" -o "$LIB_DIR/agent.py"
-    chmod 0755 "$LIB_DIR/agent.py"
+    curl -fsSL "${REPO_RAW_URL}/agent.py?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent.py
+    install -m 0755 /tmp/dashboard-agent.py "$LIB_DIR/agent.py"
+    rm -f /tmp/dashboard-agent.py
+    AGENT_TMP=$(mktemp)
+    curl -fsSL "${REPO_RAW_URL}/agent.py?t=${CACHE_BUSTER}" -o "$AGENT_TMP"
+    install -m 0755 "$AGENT_TMP" "$LIB_DIR/agent.py"
+    rm -f "$AGENT_TMP"
 fi
 
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent.service" ]]; then
@@ -365,8 +370,13 @@ if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent.service" ]]; then
     install -m 0644 "$SCRIPT_DIR/dashboard-agent.service" "$SERVICE_FILE"
 else
     echo "Downloading dashboard-agent.service from ${REPO_RAW_URL}/dashboard-agent.service..."
-    curl -fsSL "${REPO_RAW_URL}/dashboard-agent.service?t=${CACHE_BUSTER}" -o "$SERVICE_FILE"
-    chmod 0644 "$SERVICE_FILE"
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent.service?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent.service
+    install -m 0644 /tmp/dashboard-agent.service "$SERVICE_FILE"
+    rm -f /tmp/dashboard-agent.service
+    SVC_TMP=$(mktemp)
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent.service?t=${CACHE_BUSTER}" -o "$SVC_TMP"
+    install -m 0644 "$SVC_TMP" "$SERVICE_FILE"
+    rm -f "$SVC_TMP"
 fi
 
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent@.service" ]]; then
@@ -374,8 +384,13 @@ if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/dashboard-agent@.service" ]]; then
     install -m 0644 "$SCRIPT_DIR/dashboard-agent@.service" "$SERVICE_FILE_TEMPLATE"
 else
     echo "Downloading dashboard-agent@.service from ${REPO_RAW_URL}/dashboard-agent@.service..."
-    curl -fsSL "${REPO_RAW_URL}/dashboard-agent@.service?t=${CACHE_BUSTER}" -o "$SERVICE_FILE_TEMPLATE"
-    chmod 0644 "$SERVICE_FILE_TEMPLATE"
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent@.service?t=${CACHE_BUSTER}" -o /tmp/dashboard-agent@.service
+    install -m 0644 /tmp/dashboard-agent@.service "$SERVICE_FILE_TEMPLATE"
+    rm -f /tmp/dashboard-agent@.service
+    SVCT_TMP=$(mktemp)
+    curl -fsSL "${REPO_RAW_URL}/dashboard-agent@.service?t=${CACHE_BUSTER}" -o "$SVCT_TMP"
+    install -m 0644 "$SVCT_TMP" "$SERVICE_FILE_TEMPLATE"
+    rm -f "$SVCT_TMP"
 fi
 
 # Persistent agent_id
