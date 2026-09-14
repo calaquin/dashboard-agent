@@ -664,12 +664,12 @@ def snapraid_status():
     else:
         code, output, error = run_command(
             [executable, "status"],
-            timeout=8
+            timeout=30
         )
         if code != 0:
             code, output, error = run_command(
                 ["sudo", "-n", executable, "status"],
-                timeout=8
+                timeout=30
             )
 
         combined = (output + "\n" + error).strip()
@@ -677,7 +677,12 @@ def snapraid_status():
 
         has_status_output = any(kw in lower for kw in ("no error detected", "scrub status", "array status", "self test", "files with"))
         if code != 0 and not has_status_output:
-            summary = "Sudo required for snapraid status" if ("password" in lower or "sudo" in lower) else "SnapRAID status failed"
+            if "timed out" in lower:
+                summary = "SnapRAID status timed out"
+            elif any(kw in lower for kw in ("password", "sudo", "permission", "not permitted")):
+                summary = "Sudo required for snapraid status"
+            else:
+                summary = "SnapRAID status failed"
             data = {
                 "available": True,
                 "state": "warning",

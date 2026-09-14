@@ -616,6 +616,36 @@ class SnapraidStatusTests(unittest.TestCase):
             self.assertEqual(res["state"], "ok")
             self.assertIn("100% scrubbed", res["summary"])
 
+    @mock.patch("agent.shutil.which", return_value="/usr/bin/snapraid")
+    @mock.patch("agent.run_command")
+    def test_sudo_required_warning(self, mock_run, mock_which):
+        agent.snapraid_cache["data"] = None
+        agent.snapraid_cache["time"] = 0
+        mock_run.side_effect = [
+            (1, "", "permission denied"),
+            (1, "", "sudo: a password is required")
+        ]
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ENABLE_SNAPRAID": "1"}):
+            res = agent.snapraid_status()
+            self.assertTrue(res["available"])
+            self.assertEqual(res["state"], "warning")
+            self.assertEqual(res["summary"], "Sudo required for snapraid status")
+
+    @mock.patch("agent.shutil.which", return_value="/usr/bin/snapraid")
+    @mock.patch("agent.run_command")
+    def test_timeout_warning(self, mock_run, mock_which):
+        agent.snapraid_cache["data"] = None
+        agent.snapraid_cache["time"] = 0
+        mock_run.side_effect = [
+            (1, "", "permission denied"),
+            (1, "", "Command '['sudo', '-n', '/usr/bin/snapraid', 'status']' timed out after 30 seconds")
+        ]
+        with mock.patch.dict("os.environ", {"DASHBOARD_AGENT_ENABLE_SNAPRAID": "1"}):
+            res = agent.snapraid_status()
+            self.assertTrue(res["available"])
+            self.assertEqual(res["state"], "warning")
+            self.assertEqual(res["summary"], "SnapRAID status timed out")
+
 
 if __name__ == "__main__":
     unittest.main()
