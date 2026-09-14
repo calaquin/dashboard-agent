@@ -18,6 +18,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 
 def parse_port(value, default=8100):
     try:
@@ -566,27 +567,48 @@ def default_gateway():
 
 
 def ping(host):
+def ping_latency_ms(host, timeout=1.5):
     if not host:
         return False
+        return False, None
 
     code, _, _ = run_command(
+    code, output, _ = run_command(
         ["ping", "-c", "1", "-W", "1", host],
         timeout=2
+        timeout=timeout
     )
 
     if code == 0:
         return True
+    if code == 0 and output:
+        m = re.search(r'time=([\d\.]+)\s*ms', output)
+        if m:
+            try:
+                return True, round(float(m.group(1)), 1)
+            except ValueError:
+                pass
+        m = re.search(r'min/avg/max/(?:mdev|stddev)\s*=\s*[\d\.]+/([\d\.]+)/', output)
+        if m:
+            try:
+                return True, round(float(m.group(1)), 1)
+            except ValueError:
+                pass
+        return True, None
 
     # Fallback 1: TCP probe to common router ports (DNS 53, HTTP 80, HTTPS 443)
     # 0 = open, 111 (ECONNREFUSED) = router is online and active
     for port in (53, 80, 443):
         try:
+            t0 = time.time()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1.0)
             res = sock.connect_ex((host, port))
+            t1 = time.time()
             sock.close()
             if res in (0, 111):
                 return True
+                return True, round((t1 - t0) * 1000.0, 1)
         except Exception:
             pass
 
@@ -599,13 +621,24 @@ def ping(host):
                     flags = int(parts[2], 16) if parts[2].startswith("0x") else int(parts[2])
                     if flags > 0 and parts[3] != "00:00:00:00:00:00":
                         return True
+                        return True, None
     except Exception:
         pass
 
     return False
+    return False, None
+
+
+def ping(host):
+    online, _ = ping_latency_ms(host, timeout=2.0)
+    return online
 
 
 def wan_available():
+    online, _ = ping_latency_ms("1.1.1.1", timeout=1.5)
+    if online:
+        return True
+
     sock = None
 
     try:
@@ -627,6 +660,330 @@ def wan_available():
                 sock.close()
             except Exception:
                 pass
+
+
+_router_lock = threading.Lock()
+_router_endpoints_cache = {
+    "time": 0,
+    "root_url": None,
+    "friendly_name": None,
+    "model_name": None,
+    "manufacturer": None,
+    "model_number": None,
+    "ip_conn_url": None,
+    "ip_conn_service": None,
+    "cmn_if_url": None,
+    "cmn_if_service": None,
+}
+_router_traffic_history = {
+    "time": None,
+    "bytes_received": None,
+    "bytes_sent": None
+}
+
+
+def parse_xml_simple(xml_str):
+    try:
+        root = ET.fromstring(xml_str)
+        result = {}
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if elem.text and not list(elem):
+                result[tag] = elem.text.strip()
+        return result
+    except Exception:
+        return {}
+
+
+def discover_upnp_ssdp(timeout=0.8):
+    msg = (
+        'M-SEARCH * HTTP/1.1\r\n'
+        'HOST: 239.255.255.250:1900\r\n'
+        'MAN: "ssdp:discover"\r\n'
+        'MX: 1\r\n'
+        'ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n'
+        '\r\n'
+    )
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    s.settimeout(timeout)
+    locations = []
+    try:
+        s.sendto(msg.encode("utf-8"), ("239.255.255.250", 1900))
+        while True:
+            try:
+                data, _ = s.recvfrom(2048)
+                resp = data.decode("utf-8", errors="ignore")
+                for line in resp.splitlines():
+                    if line.lower().startswith("location:"):
+                        loc = line.split(":", 1)[1].strip()
+                        if loc not in locations:
+                            locations.append(loc)
+            except socket.timeout:
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    return locations
+
+
+def fetch_and_parse_root_desc(root_url, timeout=1.5):
+    try:
+        req = urllib.request.Request(root_url, headers={"User-Agent": "dashboard-agent/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            xml_str = resp.read().decode("utf-8", errors="replace")
+        root = ET.fromstring(xml_str)
+
+        def find_first_text(elem, tag_name):
+            for node in elem.iter():
+                if node.tag.endswith(tag_name) and node.text:
+                    return node.text.strip()
+            return None
+
+        friendly_name = find_first_text(root, "friendlyName")
+        model_name = find_first_text(root, "modelName")
+        manufacturer = find_first_text(root, "manufacturer")
+        model_number = find_first_text(root, "modelNumber")
+
+        ip_conn_url = None
+        ip_conn_service = None
+        cmn_if_url = None
+        cmn_if_service = None
+
+        for s_elem in root.iter():
+            if s_elem.tag.endswith("service"):
+                stype = find_first_text(s_elem, "serviceType")
+                curl = find_first_text(s_elem, "controlURL")
+                if stype and curl:
+                    full_curl = urllib.parse.urljoin(root_url, curl)
+                    if "WANIPConnection" in stype or "WANPPPConnection" in stype:
+                        ip_conn_url = full_curl
+                        ip_conn_service = stype
+                    elif "WANCommonInterfaceConfig" in stype:
+                        cmn_if_url = full_curl
+                        cmn_if_service = stype
+
+        if ip_conn_url or cmn_if_url:
+            return {
+                "root_url": root_url,
+                "friendly_name": friendly_name,
+                "model_name": model_name,
+                "manufacturer": manufacturer,
+                "model_number": model_number,
+                "ip_conn_url": ip_conn_url,
+                "ip_conn_service": ip_conn_service,
+                "cmn_if_url": cmn_if_url,
+                "cmn_if_service": cmn_if_service,
+            }
+    except Exception:
+        pass
+    return None
+
+
+def query_upnp_soap(control_url, service_type, action, args=None, timeout=1.5):
+    body = (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        f'<s:Body><u:{action} xmlns:u="{service_type}">'
+    )
+    if args:
+        for k, v in args.items():
+            body += f'<{k}>{v}</{k}>'
+    body += f'</u:{action}></s:Body></s:Envelope>'
+
+    req = urllib.request.Request(
+        control_url,
+        data=body.encode("utf-8"),
+        headers={
+            "Content-Type": 'text/xml; charset="utf-8"',
+            "SOAPAction": f'"{service_type}#{action}"',
+            "User-Agent": "dashboard-agent/1.0"
+        }
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return parse_xml_simple(resp.read().decode("utf-8", errors="replace"))
+
+
+def collect_router_upnp(gateway_ip=None):
+    if not gateway_ip:
+        return None
+
+    now = time.time()
+    endpoints = None
+
+    with _router_lock:
+        if _router_endpoints_cache["root_url"] and (now - _router_endpoints_cache["time"] < 300):
+            endpoints = dict(_router_endpoints_cache)
+
+    if endpoints is None:
+        candidate_urls = []
+        ssdp_locs = discover_upnp_ssdp(timeout=0.6)
+        for loc in ssdp_locs:
+            if gateway_ip in loc:
+                candidate_urls.insert(0, loc)
+            else:
+                candidate_urls.append(loc)
+
+        candidate_urls.extend([
+            f"http://{gateway_ip}:1900/rbupq/rootDesc.xml",
+            f"http://{gateway_ip}:1900/rootDesc.xml",
+            f"http://{gateway_ip}:1900/igd.xml",
+            f"http://{gateway_ip}:5000/rootDesc.xml",
+        ])
+
+        seen = set()
+        for cand in candidate_urls:
+            if cand in seen:
+                continue
+            seen.add(cand)
+            parsed = fetch_and_parse_root_desc(cand, timeout=1.2)
+            if parsed:
+                endpoints = parsed
+                endpoints["time"] = now
+                with _router_lock:
+                    _router_endpoints_cache.update(endpoints)
+                break
+
+    if not endpoints:
+        return None
+
+    external_ip = None
+    status_str = None
+    uptime_sec = None
+    bytes_rx = None
+    bytes_tx = None
+    packets_rx = None
+    packets_tx = None
+    link_type = None
+    link_status = None
+    downstream_max_bps = None
+    upstream_max_bps = None
+
+    if endpoints.get("ip_conn_url") and endpoints.get("ip_conn_service"):
+        try:
+            ip_resp = query_upnp_soap(endpoints["ip_conn_url"], endpoints["ip_conn_service"], "GetExternalIPAddress", timeout=1.5)
+            external_ip = ip_resp.get("NewExternalIPAddress")
+        except Exception:
+            pass
+
+        try:
+            st_resp = query_upnp_soap(endpoints["ip_conn_url"], endpoints["ip_conn_service"], "GetStatusInfo", timeout=1.5)
+            status_str = st_resp.get("NewConnectionStatus")
+            if "NewUptime" in st_resp:
+                try:
+                    uptime_sec = int(st_resp["NewUptime"])
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+    if endpoints.get("cmn_if_url") and endpoints.get("cmn_if_service"):
+        try:
+            rx_resp = query_upnp_soap(endpoints["cmn_if_url"], endpoints["cmn_if_service"], "GetTotalBytesReceived", timeout=1.5)
+            if "NewTotalBytesReceived" in rx_resp:
+                bytes_rx = int(rx_resp["NewTotalBytesReceived"])
+        except Exception:
+            pass
+
+        try:
+            tx_resp = query_upnp_soap(endpoints["cmn_if_url"], endpoints["cmn_if_service"], "GetTotalBytesSent", timeout=1.5)
+            if "NewTotalBytesSent" in tx_resp:
+                bytes_tx = int(tx_resp["NewTotalBytesSent"])
+        except Exception:
+            pass
+
+        try:
+            props_resp = query_upnp_soap(endpoints["cmn_if_url"], endpoints["cmn_if_service"], "GetCommonLinkProperties", timeout=1.5)
+            link_type = props_resp.get("NewWANAccessType")
+            link_status = props_resp.get("NewPhysicalLinkStatus")
+            if "NewLayer1DownstreamMaxBitRate" in props_resp:
+                try:
+                    downstream_max_bps = int(props_resp["NewLayer1DownstreamMaxBitRate"])
+                except ValueError:
+                    pass
+            if "NewLayer1UpstreamMaxBitRate" in props_resp:
+                try:
+                    upstream_max_bps = int(props_resp["NewLayer1UpstreamMaxBitRate"])
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            prx_resp = query_upnp_soap(endpoints["cmn_if_url"], endpoints["cmn_if_service"], "GetTotalPacketsReceived", timeout=1.0)
+            if "NewTotalPacketsReceived" in prx_resp:
+                packets_rx = int(prx_resp["NewTotalPacketsReceived"])
+        except Exception:
+            pass
+
+        try:
+            ptx_resp = query_upnp_soap(endpoints["cmn_if_url"], endpoints["cmn_if_service"], "GetTotalPacketsSent", timeout=1.0)
+            if "NewTotalPacketsSent" in ptx_resp:
+                packets_tx = int(ptx_resp["NewTotalPacketsSent"])
+        except Exception:
+            pass
+
+    download_kbps = None
+    upload_kbps = None
+    download_mbps = None
+    upload_mbps = None
+    poll_delta = None
+
+    with _router_lock:
+        prev_time = _router_traffic_history["time"]
+        prev_rx = _router_traffic_history["bytes_received"]
+        prev_tx = _router_traffic_history["bytes_sent"]
+
+        if (
+            prev_time is not None
+            and bytes_rx is not None
+            and bytes_tx is not None
+            and prev_rx is not None
+            and prev_tx is not None
+        ):
+            delta_t = now - prev_time
+            if 0.5 <= delta_t <= 300:
+                delta_rx = (bytes_rx - prev_rx) if bytes_rx >= prev_rx else bytes_rx
+                delta_tx = (bytes_tx - prev_tx) if bytes_tx >= prev_tx else bytes_tx
+
+                download_kbps = round((delta_rx * 8.0) / (delta_t * 1000.0), 1)
+                upload_kbps = round((delta_tx * 8.0) / (delta_t * 1000.0), 1)
+                download_mbps = round(download_kbps / 1000.0, 2)
+                upload_mbps = round(upload_kbps / 1000.0, 2)
+                poll_delta = round(delta_t, 1)
+
+        if bytes_rx is not None and bytes_tx is not None:
+            _router_traffic_history["time"] = now
+            _router_traffic_history["bytes_received"] = bytes_rx
+            _router_traffic_history["bytes_sent"] = bytes_tx
+
+    return {
+        "available": True,
+        "model": endpoints.get("model_name") or endpoints.get("friendly_name") or "Router",
+        "friendly_name": endpoints.get("friendly_name"),
+        "manufacturer": endpoints.get("manufacturer"),
+        "model_number": endpoints.get("model_number"),
+        "external_ip": external_ip,
+        "status": status_str or ("Connected" if external_ip else "Unknown"),
+        "uptime_seconds": uptime_sec,
+        "link_type": link_type,
+        "link_status": link_status,
+        "downstream_max_bps": downstream_max_bps,
+        "upstream_max_bps": upstream_max_bps,
+        "bytes_received": bytes_rx,
+        "bytes_sent": bytes_tx,
+        "packets_received": packets_rx,
+        "packets_sent": packets_tx,
+        "download_kbps": download_kbps,
+        "upload_kbps": upload_kbps,
+        "download_mbps": download_mbps,
+        "upload_mbps": upload_mbps,
+        "poll_interval_seconds": poll_delta,
+    }
 
 
 def snapraid_status():
@@ -753,6 +1110,11 @@ def snapraid_status():
 def build_status():
     gateway = default_gateway()
     memory = memory_status()
+    lan_ok, gw_latency = ping_latency_ms(gateway, timeout=1.5)
+    wan_ok, wan_latency = ping_latency_ms("1.1.1.1", timeout=1.5)
+    if not wan_ok:
+        wan_ok = wan_available()
+    router = collect_router_upnp(gateway)
 
     return {
         "schema": {
@@ -785,6 +1147,11 @@ def build_status():
             "gateway": gateway,
             "lan": ping(gateway),
             "wan": wan_available()
+            "lan": lan_ok,
+            "wan": wan_ok,
+            "gateway_latency_ms": gw_latency,
+            "wan_latency_ms": wan_latency,
+            "router": router
         },
 
         "storage": storage_status(),

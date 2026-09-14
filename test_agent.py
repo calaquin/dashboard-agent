@@ -647,8 +647,178 @@ class SnapraidStatusTests(unittest.TestCase):
             self.assertEqual(res["summary"], "SnapRAID status timed out")
 
 
+
+class NetworkTelemetryTests(unittest.TestCase):
+
+    def setUp(self):
+        with agent._router_lock:
+            agent._router_endpoints_cache.update({
+                "time": 0,
+                "root_url": None,
+                "friendly_name": None,
+                "model_name": None,
+                "manufacturer": None,
+                "model_number": None,
+                "ip_conn_url": None,
+                "ip_conn_service": None,
+                "cmn_if_url": None,
+                "cmn_if_service": None,
+            })
+            agent._router_traffic_history.update({
+                "time": None,
+                "bytes_received": None,
+                "bytes_sent": None
+            })
+
+    @mock.patch("agent.run_command")
+    def test_ping_latency_parses_time(self, mock_run):
+        mock_run.return_value = (0, "64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.450 ms", "")
+        online, latency = agent.ping_latency_ms("10.0.0.1")
+        self.assertTrue(online)
+        self.assertEqual(latency, 0.5)
+
+    @mock.patch("agent.run_command")
+    def test_ping_latency_parses_summary(self, mock_run):
+        mock_run.return_value = (0, "rtt min/avg/max/mdev = 12.100/14.500/16.200/1.100 ms", "")
+        online, latency = agent.ping_latency_ms("1.1.1.1")
+        self.assertTrue(online)
+        self.assertEqual(latency, 14.5)
+
+    def test_parse_xml_simple(self):
+        sample_xml = (
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<s:Body>'
+            '<u:GetStatusInfoResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">'
+            '<NewConnectionStatus>Connected</NewConnectionStatus>'
+            '<NewUptime>3600</NewUptime>'
+            '</u:GetStatusInfoResponse>'
+            '</s:Body>'
+            '</s:Envelope>'
+        )
+        res = agent.parse_xml_simple(sample_xml)
+        self.assertEqual(res.get("NewConnectionStatus"), "Connected")
+        self.assertEqual(res.get("NewUptime"), "3600")
+
+    @mock.patch("urllib.request.urlopen")
+    def test_fetch_and_parse_root_desc(self, mock_urlopen):
+        root_desc_xml = b"""<?xml version="1.0"?>
+        <root xmlns="urn:schemas-upnp-org:device-1-0">
+          <device>
+            <friendlyName>Archer AX21</friendlyName>
+            <manufacturer>TP-Link</manufacturer>
+            <modelName>Archer AX21</modelName>
+            <modelNumber>1.20</modelNumber>
+            <deviceList>
+              <device>
+                <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+                <serviceList>
+                  <service>
+                    <serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType>
+                    <controlURL>/ctl/CmnIfCfg</controlURL>
+                  </service>
+                </serviceList>
+                <deviceList>
+                  <device>
+                    <deviceType>urn:schemas-upnp-org:device:WANConnectionDevice:1</deviceType>
+                    <serviceList>
+                      <service>
+                        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+                        <controlURL>/ctl/IPConn</controlURL>
+                      </service>
+                    </serviceList>
+                  </device>
+                </deviceList>
+              </device>
+            </deviceList>
+          </device>
+        </root>"""
+        mock_resp = mock.MagicMock()
+        mock_resp.read.return_value = root_desc_xml
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        parsed = agent.fetch_and_parse_root_desc("http://10.0.0.1:1900/rootDesc.xml")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["friendly_name"], "Archer AX21")
+        self.assertEqual(parsed["model_name"], "Archer AX21")
+        self.assertEqual(parsed["manufacturer"], "TP-Link")
+        self.assertEqual(parsed["ip_conn_url"], "http://10.0.0.1:1900/ctl/IPConn")
+        self.assertEqual(parsed["cmn_if_url"], "http://10.0.0.1:1900/ctl/CmnIfCfg")
+
+    @mock.patch("agent.fetch_and_parse_root_desc")
+    @mock.patch("agent.discover_upnp_ssdp")
+    @mock.patch("agent.query_upnp_soap")
+    def test_collect_router_upnp_calculates_throughput(
+            self, mock_query_soap, mock_ssdp, mock_parse_desc):
+        mock_ssdp.return_value = ["http://10.0.0.1:1900/rootDesc.xml"]
+        mock_parse_desc.return_value = {
+            "root_url": "http://10.0.0.1:1900/rootDesc.xml",
+            "friendly_name": "Archer AX21",
+            "model_name": "Archer AX21",
+            "manufacturer": "TP-Link",
+            "model_number": "1.20",
+            "ip_conn_url": "http://10.0.0.1:1900/ctl/IPConn",
+            "ip_conn_service": "urn:schemas-upnp-org:service:WANIPConnection:1",
+            "cmn_if_url": "http://10.0.0.1:1900/ctl/CmnIfCfg",
+            "cmn_if_service": "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1",
+        }
+
+        # First query
+        def soap_side_effect_1(url, srv, action, **kwargs):
+            if action == "GetExternalIPAddress":
+                return {"NewExternalIPAddress": "73.128.182.15"}
+            if action == "GetStatusInfo":
+                return {"NewConnectionStatus": "Connected", "NewUptime": "1000"}
+            if action == "GetTotalBytesReceived":
+                return {"NewTotalBytesReceived": "1000000000"}
+            if action == "GetTotalBytesSent":
+                return {"NewTotalBytesSent": "500000000"}
+            if action == "GetCommonLinkProperties":
+                return {"NewWANAccessType": "Cable", "NewPhysicalLinkStatus": "Up"}
+            return {}
+
+        mock_query_soap.side_effect = soap_side_effect_1
+
+        with mock.patch("time.time", return_value=1000.0):
+            res1 = agent.collect_router_upnp("10.0.0.1")
+
+        self.assertIsNotNone(res1)
+        self.assertTrue(res1["available"])
+        self.assertEqual(res1["external_ip"], "73.128.182.15")
+        self.assertEqual(res1["status"], "Connected")
+        self.assertEqual(res1["uptime_seconds"], 1000)
+        self.assertEqual(res1["download_kbps"], None)
+
+        # Second query after 5 seconds with 1MB down (8Mb) and 500KB up (4Mb)
+        def soap_side_effect_2(url, srv, action, **kwargs):
+            if action == "GetExternalIPAddress":
+                return {"NewExternalIPAddress": "73.128.182.15"}
+            if action == "GetStatusInfo":
+                return {"NewConnectionStatus": "Connected", "NewUptime": "1005"}
+            if action == "GetTotalBytesReceived":
+                return {"NewTotalBytesReceived": "1001000000"}  # +1,000,000 bytes
+            if action == "GetTotalBytesSent":
+                return {"NewTotalBytesSent": "500500000"}     # +500,000 bytes
+            if action == "GetCommonLinkProperties":
+                return {"NewWANAccessType": "Cable", "NewPhysicalLinkStatus": "Up"}
+            return {}
+
+        mock_query_soap.side_effect = soap_side_effect_2
+
+        with mock.patch("time.time", return_value=1005.0):
+            res2 = agent.collect_router_upnp("10.0.0.1")
+
+        self.assertIsNotNone(res2)
+        # 1,000,000 * 8 / (5 * 1000) = 1600.0 kbps = 1.6 mbps
+        self.assertEqual(res2["download_kbps"], 1600.0)
+        self.assertEqual(res2["download_mbps"], 1.6)
+        # 500,000 * 8 / (5 * 1000) = 800.0 kbps = 0.8 mbps
+        self.assertEqual(res2["upload_kbps"], 800.0)
+        self.assertEqual(res2["upload_mbps"], 0.8)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
