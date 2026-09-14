@@ -566,21 +566,15 @@ def default_gateway():
     return None
 
 
-def ping(host):
 def ping_latency_ms(host, timeout=1.5):
     if not host:
-        return False
         return False, None
 
-    code, _, _ = run_command(
     code, output, _ = run_command(
         ["ping", "-c", "1", "-W", "1", host],
-        timeout=2
         timeout=timeout
     )
 
-    if code == 0:
-        return True
     if code == 0 and output:
         m = re.search(r'time=([\d\.]+)\s*ms', output)
         if m:
@@ -607,7 +601,6 @@ def ping_latency_ms(host, timeout=1.5):
             t1 = time.time()
             sock.close()
             if res in (0, 111):
-                return True
                 return True, round((t1 - t0) * 1000.0, 1)
         except Exception:
             pass
@@ -620,12 +613,10 @@ def ping_latency_ms(host, timeout=1.5):
                 if len(parts) >= 4 and parts[0] == host:
                     flags = int(parts[2], 16) if parts[2].startswith("0x") else int(parts[2])
                     if flags > 0 and parts[3] != "00:00:00:00:00:00":
-                        return True
                         return True, None
     except Exception:
         pass
 
-    return False
     return False, None
 
 
@@ -1145,8 +1136,6 @@ def build_status():
 
         "network": {
             "gateway": gateway,
-            "lan": ping(gateway),
-            "wan": wan_available()
             "lan": lan_ok,
             "wan": wan_ok,
             "gateway_latency_ms": gw_latency,
