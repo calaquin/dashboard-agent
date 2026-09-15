@@ -808,7 +808,10 @@ def collect_router_upnp(gateway_ip=None):
 
     with _router_lock:
         if _router_endpoints_cache["root_url"] and (now - _router_endpoints_cache["time"] < 300):
+        if _router_endpoints_cache.get("root_url") and (now - _router_endpoints_cache.get("time", 0) < 300):
             endpoints = dict(_router_endpoints_cache)
+        elif not _router_endpoints_cache.get("root_url") and (now - _router_endpoints_cache.get("last_attempt", 0) < 300):
+            return None
 
     if endpoints is None:
         candidate_urls = []
@@ -841,6 +844,10 @@ def collect_router_upnp(gateway_ip=None):
 
     if not endpoints:
         return None
+        if not endpoints:
+            with _router_lock:
+                _router_endpoints_cache["last_attempt"] = now
+            return None
 
     external_ip = None
     status_str = None
