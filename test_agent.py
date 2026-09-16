@@ -431,6 +431,44 @@ class AgentSelfUpdateTests(unittest.TestCase):
         self.assertIn("verification failed", sent[0][1]["error"])
         self.assertIn('AGENT_VERSION = "0.3.0"', self.agent_file.read_text(encoding="utf-8"))
 
+    @mock.patch("urllib.request.urlopen")
+    def test_update_tag_normalization_and_version_parsing(self, mock_urlopen):
+        new_code = (
+            b'#!/usr/bin/env python3\n'
+            b'AGENT_VERSION = "0.3.0"\n'
+            b'AGENT_VERSION = "0.3.2"\n'
+            b'def main(): pass\n'
+        )
+        mock_resp = mock.MagicMock()
+        mock_resp.status = 200
+        mock_resp.code = 200
+        mock_resp.read.return_value = new_code
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "perm-token"
+        handler.headers = {"Authorization": "Bearer perm-token"}
+        handler.path = "/api/update"
+        handler.read_json = lambda: {"tag": "0.3.2"}
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        with mock.patch("agent.Path") as mock_path:
+            def path_side_effect(arg):
+                if str(arg) in ("/usr/local/lib/dashboard-agent/agent.py", str(self.agent_file)):
+                    return self.agent_file
+                return Path(arg)
+            mock_path.side_effect = path_side_effect
+
+            handler.do_POST()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertEqual(sent[0][1]["to_version"], "0.3.2")
+        # Check that URL called had /v0.3.2/
+        req_arg = mock_urlopen.call_args[0][0]
+        self.assertIn("/v0.3.2/", req_arg.full_url)
+
 
 class MultiInstanceCliTests(unittest.TestCase):
 

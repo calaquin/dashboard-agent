@@ -1887,6 +1887,12 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                     tag = str(body_json["tag"]).strip()
             except Exception:
                 pass
+
+            if not tag or tag in ("latest", "null", "undefined"):
+                tag = "main"
+            elif re.match(r"^\d+\.\d+", tag):
+                tag = "v" + tag
+
             repo_url = os.environ.get(
                 "DASHBOARD_AGENT_REPO_URL",
                 "https://raw.githubusercontent.com/calaquin/dashboard-agent/%s" % tag
@@ -1914,6 +1920,9 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 m_ver = re.search(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
                 if m_ver:
                     new_version = m_ver.group(1)
+                matches = re.findall(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
+                if matches:
+                    new_version = matches[-1]
 
                 target_file = Path(__file__).resolve()
                 lib_file = Path("/usr/local/lib/dashboard-agent/agent.py")
