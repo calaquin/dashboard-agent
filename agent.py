@@ -1907,7 +1907,6 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 )
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     status_code = getattr(resp, "status", getattr(resp, "code", 200))
-                    if status_code != 200:
                     if status_code == 200:
                         code_bytes = resp.read()
                     elif status_code == 404 and tag != "main":
@@ -1915,7 +1914,6 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                     else:
                         self.send_json(502, {"error": "Failed to download update (HTTP %d)" % status_code})
                         return
-                    code_bytes = resp.read()
             except urllib.error.HTTPError as http_err:
                 if http_err.code != 404 or tag == "main":
                     self.send_json(502, {"error": "Failed to download update: %s" % http_err})
@@ -1924,8 +1922,6 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 self.send_json(502, {"error": "Failed to download update: %s" % exc})
                 return
 
-                if not code_bytes or len(code_bytes) < 50:
-                    self.send_json(502, {"error": "Downloaded update is empty or invalid"})
             if code_bytes is None and tag != "main":
                 # Fallback to main branch
                 try:
@@ -1941,26 +1937,15 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                     self.send_json(502, {"error": "Failed to download update from %s or main: %s" % (tag, fb_err)})
                     return
 
-                new_version = AGENT_VERSION
-                matches = re.findall(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
-                if matches:
-                    new_version = matches[-1]
             if not code_bytes or len(code_bytes) < 50:
                 self.send_json(502, {"error": "Downloaded update is empty or invalid"})
                 return
 
-                target_file = Path(__file__).resolve()
-                lib_file = Path("/usr/local/lib/dashboard-agent/agent.py")
-                if lib_file.exists() or lib_file.parent.exists():
-                    target_file = lib_file
             new_version = AGENT_VERSION
             matches = re.findall(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
             if matches:
                 new_version = matches[-1]
 
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                tmp_new = target_file.parent / (".agent.py.new.%d" % os.getpid())
-                tmp_new.write_bytes(code_bytes)
             target_file = Path(__file__).resolve()
             lib_file = Path("/usr/local/lib/dashboard-agent/agent.py")
             if lib_file.exists() or lib_file.parent.exists():
@@ -1974,30 +1959,14 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 py_compile.compile(str(tmp_new), doraise=True)
             except Exception as comp_err:
                 try:
-                    os.chmod(tmp_new, 0o755)
-                    py_compile.compile(str(tmp_new), doraise=True)
-                except Exception as comp_err:
-                    try:
-                        tmp_new.unlink()
-                    except OSError:
-                        pass
-                    self.send_json(400, {"error": "Update verification failed: %s" % comp_err})
-                    return
                     tmp_new.unlink()
                 except OSError:
                     pass
                 self.send_json(400, {"error": "Update verification failed: %s" % comp_err})
                 return
 
-                os.replace(tmp_new, target_file)
             os.replace(tmp_new, target_file)
 
-                self.send_json(200, {
-                    "ok": True,
-                    "status": "updated",
-                    "from_version": AGENT_VERSION,
-                    "to_version": new_version
-                })
             self.send_json(200, {
                 "ok": True,
                 "status": "updated",
@@ -2005,21 +1974,12 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 "to_version": new_version
             })
 
-                def restart_agent():
-                    time.sleep(0.5)
-                    os._exit(0)
             def restart_agent():
                 time.sleep(0.5)
                 os._exit(0)
 
-                threading.Thread(target=restart_agent, daemon=True).start()
-                return
             threading.Thread(target=restart_agent, daemon=True).start()
             return
-
-            except Exception as exc:
-                self.send_json(500, {"error": "Update failed: %s" % exc})
-                return
 
         self.send_json(404, {"error": "Not found"})
 

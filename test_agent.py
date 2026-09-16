@@ -474,7 +474,6 @@ class AgentSelfUpdateTests(unittest.TestCase):
     def test_update_tag_404_fallback_to_main(self, mock_urlopen):
         new_code = (
             b'#!/usr/bin/env python3\n'
-            b'AGENT_VERSION = "0.7.2"\n'
             b'AGENT_VERSION = "0.7.3"\n'
             b'def main(): pass\n'
         )
@@ -495,7 +494,6 @@ class AgentSelfUpdateTests(unittest.TestCase):
         handler.agent_token = "perm-token"
         handler.headers = {"Authorization": "Bearer perm-token"}
         handler.path = "/api/update"
-        handler.read_json = lambda: {"tag": "v0.7.2"}
         handler.read_json = lambda: {"tag": "v0.7.3"}
         sent = []
         handler.send_json = lambda status, body: sent.append((status, body))
@@ -511,7 +509,6 @@ class AgentSelfUpdateTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], 200)
-        self.assertEqual(sent[0][1]["to_version"], "0.7.2")
         self.assertEqual(sent[0][1]["to_version"], "0.7.3")
         # Verify second call went to /main/
         second_call_arg = mock_urlopen.call_args_list[1][0][0]
