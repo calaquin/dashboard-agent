@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import urllib.error
 from unittest import mock
 
 import agent
@@ -468,6 +469,53 @@ class AgentSelfUpdateTests(unittest.TestCase):
         # Check that URL called had /v0.3.2/
         req_arg = mock_urlopen.call_args[0][0]
         self.assertIn("/v0.3.2/", req_arg.full_url)
+
+    @mock.patch("urllib.request.urlopen")
+    def test_update_tag_404_fallback_to_main(self, mock_urlopen):
+        new_code = (
+            b'#!/usr/bin/env python3\n'
+            b'AGENT_VERSION = "0.7.2"\n'
+            b'AGENT_VERSION = "0.7.3"\n'
+            b'def main(): pass\n'
+        )
+        mock_resp_404 = urllib.error.HTTPError("http://example.com", 404, "Not Found", {}, None)
+        mock_resp_200 = mock.MagicMock()
+        mock_resp_200.status = 200
+        mock_resp_200.code = 200
+        mock_resp_200.read.return_value = new_code
+
+        # First call raises 404 HTTPError, second call (main) returns 200 mock_resp
+        mock_urlopen.side_effect = [
+            mock_resp_404,
+            mock_resp_200
+        ]
+        mock_resp_200.__enter__.return_value = mock_resp_200
+
+        handler = object.__new__(agent.AgentHandler)
+        handler.agent_token = "perm-token"
+        handler.headers = {"Authorization": "Bearer perm-token"}
+        handler.path = "/api/update"
+        handler.read_json = lambda: {"tag": "v0.7.2"}
+        handler.read_json = lambda: {"tag": "v0.7.3"}
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        with mock.patch("agent.Path") as mock_path:
+            def path_side_effect(arg):
+                if str(arg) in ("/usr/local/lib/dashboard-agent/agent.py", str(self.agent_file)):
+                    return self.agent_file
+                return Path(arg)
+            mock_path.side_effect = path_side_effect
+
+            handler.do_POST()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        self.assertEqual(sent[0][1]["to_version"], "0.7.2")
+        self.assertEqual(sent[0][1]["to_version"], "0.7.3")
+        # Verify second call went to /main/
+        second_call_arg = mock_urlopen.call_args_list[1][0][0]
+        self.assertIn("/main/", second_call_arg.full_url)
 
 
 class MultiInstanceCliTests(unittest.TestCase):
