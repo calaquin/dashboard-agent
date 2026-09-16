@@ -33,7 +33,7 @@ def parse_port(value, default=8100):
 PORT = parse_port(os.environ.get("DASHBOARD_AGENT_PORT"), 8100)
 
 AGENT_NAME = "dashboard-agent"
-AGENT_VERSION = "0.7.4"
+AGENT_VERSION = "0.7.5"
 STATUS_SCHEMA_NAME = "dashboard-agent-status"
 STATUS_SCHEMA_VERSION = 1
 
