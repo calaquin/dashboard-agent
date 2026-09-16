@@ -1351,6 +1351,40 @@ def collect_memory_profile():
     }
 
 
+def check_interface_wol(iface_name):
+    if not iface_name or not re.match(r"^[a-zA-Z0-9_.-]+$", iface_name):
+        return {"supported": False, "enabled": False}
+
+    # First check using ethtool
+    code, out, _ = run_command(["ethtool", iface_name], timeout=3)
+    if code == 0 and out:
+        supports_match = re.search(r"Supports Wake-on:\s*(\S+)", out, re.IGNORECASE)
+        wake_match = re.search(r"^\s*Wake-on:\s*(\S+)", out, re.MULTILINE | re.IGNORECASE)
+        if supports_match:
+            flags = supports_match.group(1).lower()
+            # Flags other than 'd' (p, u, m, b, a, g, s) indicate WOL support
+            supported = bool(re.search(r"[a-ce-z]", flags))
+            enabled = False
+            if wake_match:
+                curr_flags = wake_match.group(1).lower()
+                enabled = bool(re.search(r"[a-ce-z]", curr_flags))
+            return {"supported": supported, "enabled": enabled}
+
+    # Fallback to sysfs power wakeup attributes
+    try:
+        sysfs_wakeup = Path("/sys/class/net") / iface_name / "device" / "power" / "wakeup"
+        if not sysfs_wakeup.exists():
+            sysfs_wakeup = Path("/sys/class/net") / iface_name / "power" / "wakeup"
+        if sysfs_wakeup.exists():
+            val = sysfs_wakeup.read_text().strip().lower()
+            if val in ("enabled", "disabled"):
+                return {"supported": True, "enabled": (val == "enabled")}
+    except Exception:
+        pass
+
+    return {"supported": False, "enabled": False}
+
+
 def collect_network_interfaces():
     ifaces = []
     net_path = Path("/sys/class/net")
@@ -1383,11 +1417,14 @@ def collect_network_interfaces():
                         operstate = state_file.read_text().strip()
                 except Exception:
                     pass
+                wol_info = check_interface_wol(name)
                 ifaces.append({
                     "name": name,
                     "mac": mac,
                     "speed": speed,
-                    "state": operstate
+                    "state": operstate,
+                    "wol_supported": wol_info["supported"],
+                    "wol_enabled": wol_info["enabled"]
                 })
         except Exception:
             pass
@@ -1434,12 +1471,26 @@ def collect_storage_devices():
 
 
 def collect_hardware_profile():
+    ifaces = collect_network_interfaces()
+    wol_supported = any(iface.get("wol_supported", False) for iface in ifaces)
+    primary_mac = ""
+    for iface in ifaces:
+        mac = iface.get("mac", "")
+        if mac and mac != "00:00:00:00:00:00":
+            if iface.get("state") == "up":
+                primary_mac = mac
+                break
+            if not primary_mac:
+                primary_mac = mac
     return {
         "cpu": collect_cpu_profile(),
         "platform": collect_platform_profile(),
         "os": collect_os_profile(),
         "memory": collect_memory_profile(),
         "network_interfaces": collect_network_interfaces(),
+        "network_interfaces": ifaces,
+        "primary_mac": primary_mac,
+        "wol_supported": wol_supported,
         "gpu": collect_gpu_profile(),
         "storage_devices": collect_storage_devices(),
         "timestamp": int(time.time())
@@ -1677,6 +1728,17 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 self.send_json(code, payload)
                 return
             agent_id = get_or_create_agent_id(self.data_dir)
+            ifaces = collect_network_interfaces()
+            wol_supported = any(iface.get("wol_supported", False) for iface in ifaces)
+            primary_mac = ""
+            for iface in ifaces:
+                mac = iface.get("mac", "")
+                if mac and mac != "00:00:00:00:00:00":
+                    if iface.get("state") == "up":
+                        primary_mac = mac
+                        break
+                    if not primary_mac:
+                        primary_mac = mac
             self.send_json(200, {
                 "agent_id": agent_id,
                 "hostname": hostname(),
@@ -1684,7 +1746,10 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                 "agent_version": AGENT_VERSION,
                 "schema_version": STATUS_SCHEMA_VERSION,
                 "capabilities": list(CAPABILITIES),
-                "enrollment_id": payload.get("enrollment_id")
+                "enrollment_id": payload.get("enrollment_id"),
+                "primary_mac": primary_mac,
+                "wol_supported": wol_supported,
+                "network_interfaces": ifaces
             })
             return
 

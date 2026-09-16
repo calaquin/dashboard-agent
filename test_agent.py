@@ -250,6 +250,30 @@ class EnrollmentProtocolTests(unittest.TestCase):
         self.assertEqual(code, 410)
         self.assertFalse(enrollment_file.exists())
 
+    def test_probe_endpoint_response_structure(self):
+        enrollment_file = agent.Path(self.data_dir) / "enrollment.json"
+        agent.atomic_write_json(enrollment_file, {
+            "enrollment_id": "test-enroll-id",
+            "bootstrap_token": "test-boot-token",
+            "expires_at": int(time.time()) + 1800
+        })
+        handler = object.__new__(agent.AgentHandler)
+        handler.data_dir = self.data_dir
+        handler.headers = {"Authorization": "Bearer test-boot-token"}
+        handler.path = "/api/enroll/probe"
+        sent = []
+        handler.send_json = lambda status, body: sent.append((status, body))
+
+        handler.do_GET()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 200)
+        data = sent[0][1]
+        self.assertEqual(data["agent_id"], agent.get_or_create_agent_id(self.data_dir))
+        self.assertEqual(data["enrollment_id"], "test-enroll-id")
+        self.assertIn("wol_supported", data)
+        self.assertIn("primary_mac", data)
+        self.assertIn("network_interfaces", data)
+
     def test_commit_rotates_credentials_and_is_idempotent(self):
         import io
         enrollment_file = agent.Path(self.data_dir) / "enrollment.json"
@@ -499,8 +523,64 @@ class HardwareProfileTests(unittest.TestCase):
         self.assertIn("os", profile)
         self.assertIn("memory", profile)
         self.assertIn("network_interfaces", profile)
+        self.assertIn("wol_supported", profile)
+        self.assertIn("primary_mac", profile)
         self.assertIn("gpu", profile)
         self.assertIn("storage_devices", profile)
+
+    @mock.patch("agent.run_command")
+    def test_check_interface_wol_ethtool_supported_and_enabled(self, mock_run):
+        mock_run.return_value = (0, "Supports Wake-on: pumbg\nWake-on: g\n", "")
+        res = agent.check_interface_wol("eth0")
+        self.assertTrue(res["supported"])
+        self.assertTrue(res["enabled"])
+
+    @mock.patch("agent.run_command")
+    def test_check_interface_wol_ethtool_supported_but_disabled(self, mock_run):
+        mock_run.return_value = (0, "Supports Wake-on: pumbg\nWake-on: d\n", "")
+        res = agent.check_interface_wol("eth0")
+        self.assertTrue(res["supported"])
+        self.assertFalse(res["enabled"])
+
+    @mock.patch("agent.run_command")
+    def test_check_interface_wol_ethtool_unsupported(self, mock_run):
+        mock_run.return_value = (0, "Supports Wake-on: d\nWake-on: d\n", "")
+        res = agent.check_interface_wol("eth0")
+        self.assertFalse(res["supported"])
+        self.assertFalse(res["enabled"])
+
+    @mock.patch("agent.run_command")
+    def test_check_interface_wol_ethtool_error(self, mock_run):
+        mock_run.return_value = (1, "Cannot get wake-on-lan settings: Operation not supported\n", "")
+        res = agent.check_interface_wol("wlan0")
+        self.assertFalse(res["supported"])
+        self.assertFalse(res["enabled"])
+
+    def test_check_interface_wol_invalid_name(self):
+        res = agent.check_interface_wol("bad;name")
+        self.assertFalse(res["supported"])
+        self.assertFalse(res["enabled"])
+
+    @mock.patch("agent.run_command")
+    @mock.patch("pathlib.Path.exists")
+    @mock.patch("pathlib.Path.read_text")
+    def test_check_interface_wol_sysfs_fallback(self, mock_read, mock_exists, mock_run):
+        mock_run.return_value = (1, "", "command not found")
+        mock_exists.return_value = True
+        mock_read.return_value = "enabled\n"
+        res = agent.check_interface_wol("eth0")
+        self.assertTrue(res["supported"])
+        self.assertTrue(res["enabled"])
+
+    @mock.patch("agent.collect_network_interfaces")
+    def test_collect_hardware_profile_wol_detection(self, mock_ifaces):
+        mock_ifaces.return_value = [
+            {"name": "eth0", "mac": "AA:BB:CC:DD:EE:FF", "state": "up", "wol_supported": True, "wol_enabled": True},
+            {"name": "wlan0", "mac": "11:22:33:44:55:66", "state": "down", "wol_supported": False, "wol_enabled": False}
+        ]
+        profile = agent.collect_hardware_profile()
+        self.assertTrue(profile["wol_supported"])
+        self.assertEqual(profile["primary_mac"], "AA:BB:CC:DD:EE:FF")
 
     def test_profile_endpoint_authorized(self):
         handler = object.__new__(agent.AgentHandler)
@@ -515,6 +595,7 @@ class HardwareProfileTests(unittest.TestCase):
         self.assertEqual(sent[0][0], 200)
         self.assertIn("cpu", sent[0][1])
         self.assertIn("platform", sent[0][1])
+        self.assertIn("wol_supported", sent[0][1])
 
 
 class UninstallTests(unittest.TestCase):
