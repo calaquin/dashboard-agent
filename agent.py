@@ -1917,9 +1917,6 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
                     return
 
                 new_version = AGENT_VERSION
-                m_ver = re.search(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
-                if m_ver:
-                    new_version = m_ver.group(1)
                 matches = re.findall(r'AGENT_VERSION\s*=\s*["\']([^"\']+)["\']', code_bytes.decode("utf-8", errors="replace"))
                 if matches:
                     new_version = matches[-1]
