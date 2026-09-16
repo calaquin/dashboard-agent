@@ -655,11 +655,35 @@ class HardwareProfileTests(unittest.TestCase):
         self.assertTrue(res["supported"])
         self.assertTrue(res["enabled"])
 
+    @mock.patch("agent.run_command")
+    @mock.patch("pathlib.Path.exists")
+    @mock.patch("pathlib.Path.read_text")
+    def test_check_interface_wol_physical_device_fallback(self, mock_read, mock_exists, mock_run):
+        mock_run.return_value = (1, "", "command not found")
+        # Simulating ethtool and sysfs wakeup not existing, but /sys/class/net/enp3s0/device and address existing
+        def exists_side_effect(self_path=None):
+            return True
+        mock_exists.side_effect = exists_side_effect
+        mock_read.return_value = "00:11:22:33:44:55"
+        res = agent.check_interface_wol("enp3s0")
+        self.assertTrue(res["supported"])
+        self.assertFalse(res["enabled"])
+
     @mock.patch("agent.collect_network_interfaces")
     def test_collect_hardware_profile_wol_detection(self, mock_ifaces):
         mock_ifaces.return_value = [
             {"name": "eth0", "mac": "AA:BB:CC:DD:EE:FF", "state": "up", "wol_supported": True, "wol_enabled": True},
             {"name": "wlan0", "mac": "11:22:33:44:55:66", "state": "down", "wol_supported": False, "wol_enabled": False}
+        ]
+        profile = agent.collect_hardware_profile()
+        self.assertTrue(profile["wol_supported"])
+        self.assertEqual(profile["primary_mac"], "AA:BB:CC:DD:EE:FF")
+
+    @mock.patch("agent.collect_network_interfaces")
+    def test_collect_hardware_profile_prioritizes_wol_mac(self, mock_ifaces):
+        mock_ifaces.return_value = [
+            {"name": "docker0", "mac": "02:42:12:34:56:78", "state": "up", "wol_supported": False, "wol_enabled": False},
+            {"name": "enp3s0", "mac": "AA:BB:CC:DD:EE:FF", "state": "up", "wol_supported": True, "wol_enabled": True}
         ]
         profile = agent.collect_hardware_profile()
         self.assertTrue(profile["wol_supported"])

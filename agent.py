@@ -1354,30 +1354,69 @@ def check_interface_wol(iface_name):
     if not iface_name or not re.match(r"^[a-zA-Z0-9_.-]+$", iface_name):
         return {"supported": False, "enabled": False}
 
-    # First check using ethtool
-    code, out, _ = run_command(["ethtool", iface_name], timeout=3)
+    # First check using ethtool across standard binary paths
+    ethtool_bins = ["ethtool", "/usr/sbin/ethtool", "/sbin/ethtool", "/usr/local/sbin/ethtool"]
+    found_ethtool = None
+    for b in ethtool_bins:
+        if shutil.which(b) or os.path.exists(b):
+            found_ethtool = b
+            break
+    if not found_ethtool:
+        found_ethtool = "ethtool"
+
+    code, out, _ = run_command([found_ethtool, iface_name], timeout=3)
+    if code != 0 and found_ethtool:
+        # Try with sudo -n if non-root user lacks permissions
+        code_sudo, out_sudo, _ = run_command(["sudo", "-n", found_ethtool, iface_name], timeout=3)
+        if code_sudo == 0 and out_sudo:
+            code, out = code_sudo, out_sudo
+
     if code == 0 and out:
         supports_match = re.search(r"Supports Wake-on:\s*(\S+)", out, re.IGNORECASE)
         wake_match = re.search(r"^\s*Wake-on:\s*(\S+)", out, re.MULTILINE | re.IGNORECASE)
+        supported = False
+        enabled = False
+        matched = False
         if supports_match:
+            matched = True
             flags = supports_match.group(1).lower()
             # Flags other than 'd' (p, u, m, b, a, g, s) indicate WOL support
-            supported = bool(re.search(r"[a-ce-z]", flags))
-            enabled = False
-            if wake_match:
-                curr_flags = wake_match.group(1).lower()
-                enabled = bool(re.search(r"[a-ce-z]", curr_flags))
+            supported = bool(flags != "d" and re.search(r"[a-ce-z]", flags))
+        if wake_match:
+            matched = True
+            curr_flags = wake_match.group(1).lower()
+            enabled = bool(curr_flags != "d" and re.search(r"[a-ce-z]", curr_flags))
+            if enabled:
+                supported = True
+        if matched:
             return {"supported": supported, "enabled": enabled}
 
     # Fallback to sysfs power wakeup attributes
     try:
-        sysfs_wakeup = Path("/sys/class/net") / iface_name / "device" / "power" / "wakeup"
-        if not sysfs_wakeup.exists():
-            sysfs_wakeup = Path("/sys/class/net") / iface_name / "power" / "wakeup"
-        if sysfs_wakeup.exists():
-            val = sysfs_wakeup.read_text().strip().lower()
-            if val in ("enabled", "disabled"):
-                return {"supported": True, "enabled": (val == "enabled")}
+        sysfs_paths = [
+            Path("/sys/class/net") / iface_name / "device" / "power" / "wakeup",
+            Path("/sys/class/net") / iface_name / "power" / "wakeup",
+            Path("/sys/class/net") / iface_name / "device" / ".." / "power" / "wakeup"
+        ]
+        for sysfs_wakeup in sysfs_paths:
+            if sysfs_wakeup.exists():
+                val = sysfs_wakeup.read_text().strip().lower()
+                if val in ("enabled", "disabled"):
+                    return {"supported": True, "enabled": (val == "enabled")}
+    except Exception:
+        pass
+
+    # Fallback: physical wired Ethernet interfaces (e.g. motherboard/PCIe NICs used by UpSnap)
+    try:
+        dev_path = Path("/sys/class/net") / iface_name / "device"
+        if dev_path.exists():
+            virt_prefixes = ("docker", "br-", "br0", "veth", "virbr", "tun", "tap", "wg", "dummy", "tailscale", "zt", "ham")
+            if not any(iface_name.startswith(p) for p in virt_prefixes):
+                addr_file = Path("/sys/class/net") / iface_name / "address"
+                if addr_file.exists():
+                    mac = addr_file.read_text().strip().upper()
+                    if mac and mac != "00:00:00:00:00:00" and len(mac) == 17:
+                        return {"supported": True, "enabled": False}
     except Exception:
         pass
 
@@ -1476,10 +1515,14 @@ def collect_hardware_profile():
     for iface in ifaces:
         mac = iface.get("mac", "")
         if mac and mac != "00:00:00:00:00:00":
-            if iface.get("state") == "up":
+            if iface.get("wol_supported") and iface.get("state") == "up":
                 primary_mac = mac
                 break
-            if not primary_mac:
+            if iface.get("wol_supported") and not primary_mac:
+                primary_mac = mac
+            elif iface.get("state") == "up" and not primary_mac:
+                primary_mac = mac
+            elif not primary_mac:
                 primary_mac = mac
     return {
         "cpu": collect_cpu_profile(),
@@ -1733,10 +1776,14 @@ class AgentHandler(JsonHandlerMixin, http.server.BaseHTTPRequestHandler):
             for iface in ifaces:
                 mac = iface.get("mac", "")
                 if mac and mac != "00:00:00:00:00:00":
-                    if iface.get("state") == "up":
+                    if iface.get("wol_supported") and iface.get("state") == "up":
                         primary_mac = mac
                         break
-                    if not primary_mac:
+                    if iface.get("wol_supported") and not primary_mac:
+                        primary_mac = mac
+                    elif iface.get("state") == "up" and not primary_mac:
+                        primary_mac = mac
+                    elif not primary_mac:
                         primary_mac = mac
             self.send_json(200, {
                 "agent_id": agent_id,
